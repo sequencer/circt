@@ -186,7 +186,7 @@ bool firrtl::hasDontTouch(FieldRef fieldRef) {
   if (auto *op = value.getDefiningOp())
     return hasDontTouch(op, fieldRef.getFieldID());
   auto arg = value.dyn_cast<BlockArgument>();
-  auto module = cast<FModuleOp>(arg.getOwner()->getParentOp());
+  auto module = cast<FModuleLike>(arg.getOwner()->getParentOp());
   return AnnotationSet::forPort(module, arg.getArgNumber())
       .hasDontTouch(fieldRef.getFieldID());
 }

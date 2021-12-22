@@ -233,7 +233,7 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
 
   bool isOverdefined(Value value) const {
     assert(value.getType().cast<FIRRTLType>().isGround() &&
-           "don't call this function for non-grund types");
+           "don't call this function for non-ground types");
     return isOverdefined(getFieldRefFromValue(value));
   }
 

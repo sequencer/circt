@@ -152,7 +152,7 @@ static StringRef getSymOpName(Operation *symOp) {
 bool ExportVerilog::isVerilogExpression(Operation *op) {
   // These are SV dialect expressions.
   if (isa<ReadInOutOp, ArrayIndexInOutOp, IndexedPartSelectInOutOp,
-          IndexedPartSelectOp, ParamValueOp, XMROp>(op))
+          StructFieldInOutOp, IndexedPartSelectOp, ParamValueOp, XMROp>(op))
     return true;
 
   // All HW combinational logic ops and SV expression ops are Verilog
@@ -229,6 +229,9 @@ static bool isZeroBitType(Type type) {
     return isZeroBitType(uarray.getElementType());
   if (auto array = type.dyn_cast<hw::ArrayType>())
     return isZeroBitType(array.getElementType());
+  if (auto structType = type.dyn_cast<hw::StructType>())
+    return llvm::all_of(structType.getElements(),
+                        [](auto elem) { return isZeroBitType(elem.type); });
 
   // We have an open type system, so assume it is ok.
   return false;
@@ -246,6 +249,16 @@ static Type stripUnpackedTypes(Type type) {
         return stripUnpackedTypes(arrayType.getElementType());
       })
       .Default([](Type type) { return type; });
+}
+
+/// Return true if type has a struct type as a subtype.
+static bool hasStructType(Type type) {
+  return TypeSwitch<Type, bool>(type)
+      .Case<InOutType, UnpackedArrayType, ArrayType>([](auto parentType) {
+        return hasStructType(parentType.getElementType());
+      })
+      .Case<StructType>([](auto) { return true; })
+      .Default([](auto) { return false; });
 }
 
 /// Return the word (e.g. "reg") in Verilog to declare the specified thing.
@@ -284,10 +297,16 @@ static StringRef getVerilogDeclWord(Operation *op,
   // fall through to default.
   bool isProcedural = op->getParentOp()->hasTrait<ProceduralRegion>();
 
-  // "automatic logic" values aren't allowed in disallowLocalVariables mode.
-  assert((!isProcedural || !options.disallowLocalVariables) &&
-         "automatic variables not allowed");
-  return isProcedural ? "automatic logic" : "wire";
+  if (!isProcedural)
+    return "wire";
+
+  // "automatic" values aren't allowed in disallowLocalVariables mode.
+  assert(!options.disallowLocalVariables && "automatic variables not allowed");
+
+  // If the type contains a struct type, we have to use only "automatic" because
+  // "automatic struct" is syntactically correct.
+  return hasStructType(op->getResult(0).getType()) ? "automatic"
+                                                   : "automatic logic";
 }
 
 /// Pull any FileLineCol locs out of the specified location and add it to the
@@ -393,6 +412,33 @@ getLocationInfoAsString(const SmallPtrSet<Operation *, 8> &ops) {
   }
 
   return sstr.str();
+}
+
+/// Most expressions are invalid to bit-select from in Verilog, but some
+/// things are ok.  Return true if it is ok to inline bitselect from the
+/// result of this expression.  It is conservatively correct to return false.
+static bool isOkToBitSelectFrom(Value v) {
+  // Module ports are always ok to bit select from.
+  if (v.isa<BlockArgument>())
+    return true;
+
+  // Uses of a wire or register can be done inline.
+  if (auto read = v.getDefiningOp<ReadInOutOp>()) {
+    if (read.input().getDefiningOp<WireOp>() ||
+        read.input().getDefiningOp<RegOp>())
+      return true;
+  }
+
+  // Aggregate access can be inlined.
+  if (v.getDefiningOp<StructExtractOp>())
+    return true;
+
+  // Interface signal can be inlined.
+  if (v.getDefiningOp<ReadInterfaceSignalOp>())
+    return true;
+
+  // TODO: We could handle concat and other operators here.
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -644,8 +690,10 @@ void EmitterBase::emitTextWithSubstitutions(
       while (next < string.size() && isdigit(string[next]))
         ++next;
       // We need at least one digit.
-      if (start == next)
+      if (start == next) {
+        next--;
         continue;
+      }
 
       // We must have a }} right after the digits.
       if (!string.substr(next).startswith("}}"))
@@ -990,13 +1038,19 @@ static bool printPackedTypeImpl(Type type, raw_ostream &os, Location loc,
                                    emitter);
       })
       .Case<StructType>([&](StructType structType) {
+        if (structType.getElements().empty()) {
+          if (!implicitIntType)
+            os << "logic ";
+          os << "/*Zero Width*/";
+          return true;
+        }
         os << "struct packed {";
         for (auto &element : structType.getElements()) {
           SmallVector<Attribute, 8> structDims;
           printPackedTypeImpl(stripUnpackedTypes(element.type), os, loc,
                               structDims, /*implicitIntType=*/false,
                               /*singleBitDefaultType=*/true, emitter);
-          os << ' ' << element.name;
+          os << ' ' << element.name.getValue();
           emitter.printUnpackedTypePostfix(element.type, os);
           os << "; ";
         }
@@ -1375,6 +1429,7 @@ private:
   SubExprInfo visitSV(ArrayIndexInOutOp op);
   SubExprInfo visitSV(IndexedPartSelectInOutOp op);
   SubExprInfo visitSV(IndexedPartSelectOp op);
+  SubExprInfo visitSV(StructFieldInOutOp op);
 
   // Other
   using TypeOpVisitor::visitTypeOp;
@@ -1807,7 +1862,8 @@ SubExprInfo ExprEmitter::visitComb(ExtractOp op) {
   unsigned hiBit = loBit + op.getType().getWidth() - 1;
 
   auto x = emitSubExpr(op.input(), LowestPrecedence, OOLUnary);
-  assert(x.precedence == Symbol &&
+  assert((x.precedence == Symbol ||
+          (x.precedence == Selection && isOkToBitSelectFrom(op.input()))) &&
          "should be handled by isExpressionUnableToInline");
 
   // If we're extracting the whole input, just return it.  This is valid but
@@ -1856,12 +1912,12 @@ SubExprInfo ExprEmitter::visitVerbatimExprOp(Operation *op, ArrayAttr symbols) {
 }
 
 SubExprInfo ExprEmitter::visitSV(ConstantXOp op) {
-  os << op.getType().getWidth() << "'bx";
+  os << op.getWidth() << "'bx";
   return {Unary, IsUnsigned};
 }
 
 SubExprInfo ExprEmitter::visitSV(ConstantZOp op) {
-  os << op.getType().getWidth() << "'bz";
+  os << op.getWidth() << "'bz";
   return {Unary, IsUnsigned};
 }
 
@@ -1974,6 +2030,12 @@ SubExprInfo ExprEmitter::visitSV(IndexedPartSelectOp op) {
   return info;
 }
 
+SubExprInfo ExprEmitter::visitSV(StructFieldInOutOp op) {
+  auto prec = emitSubExpr(op.input(), Selection, OOLUnary);
+  os << '.' << op.field();
+  return {Selection, prec.signedness};
+}
+
 SubExprInfo ExprEmitter::visitComb(MuxOp op) {
   // The ?: operator is right associative.
   emitSubExpr(op.cond(), VerilogPrecedence(Conditional - 1), OOLBinary);
@@ -1996,7 +2058,7 @@ SubExprInfo ExprEmitter::visitTypeOp(StructCreateOp op) {
   size_t i = 0;
   llvm::interleaveComma(stype.getElements(), os,
                         [&](const StructType::FieldInfo &field) {
-                          os << field.name << ": ";
+                          os << field.name.getValue() << ": ";
                           emitSubExpr(op.getOperand(i++), Selection, OOLBinary);
                         });
   os << '}';
@@ -2014,12 +2076,12 @@ SubExprInfo ExprEmitter::visitTypeOp(StructInjectOp op) {
   os << "'{";
   llvm::interleaveComma(stype.getElements(), os,
                         [&](const StructType::FieldInfo &field) {
-                          os << field.name << ": ";
+                          os << field.name.getValue() << ": ";
                           if (field.name == op.field()) {
                             emitSubExpr(op.newValue(), Selection, OOLBinary);
                           } else {
                             emitSubExpr(op.input(), Selection, OOLBinary);
-                            os << '.' << field.name;
+                            os << '.' << field.name.getValue();
                           }
                         });
   os << '}';
@@ -2035,25 +2097,6 @@ SubExprInfo ExprEmitter::visitUnhandledExpr(Operation *op) {
 //===----------------------------------------------------------------------===//
 // NameCollector
 //===----------------------------------------------------------------------===//
-
-/// Most expressions are invalid to bit-select from in Verilog, but some
-/// things are ok.  Return true if it is ok to inline bitselect from the
-/// result of this expression.  It is conservatively correct to return false.
-static bool isOkToBitSelectFrom(Value v) {
-  // Module ports are always ok to bit select from.
-  if (v.isa<BlockArgument>())
-    return true;
-
-  // Uses of a wire or register can be done inline.
-  if (auto read = v.getDefiningOp<ReadInOutOp>()) {
-    if (read.input().getDefiningOp<WireOp>() ||
-        read.input().getDefiningOp<RegOp>())
-      return true;
-  }
-
-  // TODO: We could handle concat and other operators here.
-  return false;
-}
 
 /// Return true if we are unable to ever inline the specified operation.  This
 /// happens because not all Verilog expressions are composable, notably you
@@ -2089,7 +2132,7 @@ static bool isExpressionUnableToInline(Operation *op) {
     //     assign bar = {{a}, {b}, {c}, {d}}[idx];
     //
     // To handle these, we push the subexpression into a temporary.
-    if (isa<ExtractOp, ArraySliceOp, ArrayGetOp>(user))
+    if (isa<ExtractOp, ArraySliceOp, ArrayGetOp, StructExtractOp>(user))
       if (op->getResult(0) == user->getOperand(0) && // ignore index operands.
           !isOkToBitSelectFrom(op->getResult(0)))
         return true;
@@ -2385,6 +2428,7 @@ private:
   /// This is the index of the end of the declaration region of the current
   /// 'begin' block, used to emit variable declarations.
   RearrangableOStream::Cursor blockDeclarationInsertPoint;
+  unsigned blockDeclarationIndentLevel = 0;
 
   /// This keeps track of the number of statements emitted, important for
   /// determining if we need to put out a begin/end marker in a block
@@ -2949,8 +2993,11 @@ void StmtEmitter::emitBlockAsStatement(Block *block,
 
   // Change the blockDeclarationInsertPointIndex for the statements in this
   // block, and restore it back when we move on to code after the block.
-  llvm::SaveAndRestore<RearrangableOStream::Cursor> X(
+  llvm::SaveAndRestore<RearrangableOStream::Cursor> x(
       blockDeclarationInsertPoint, rearrangableStream.getCursor());
+  llvm::SaveAndRestore<unsigned> x2(blockDeclarationIndentLevel,
+                                    state.currentIndent + INDENT_AMOUNT);
+
   auto numEmittedBefore = getNumStatementsEmitted();
   emitStatementBlock(*block);
 
@@ -3455,18 +3502,7 @@ isExpressionEmittedInlineIntoProceduralDeclaration(Operation *op,
 bool StmtEmitter::emitDeclarationForTemporary(Operation *op) {
   StringRef declWord = getVerilogDeclWord(op, state.options);
 
-  // If we're emitting a declaration inside of an ifdef region, we'll insert
-  // the declaration outside of it.  This means we need to unindent a bit due
-  // to the indent level.
-  unsigned ifdefDepth = 0;
-  Operation *parentOp = op->getParentOp();
-  while (isa<IfDefProceduralOp>(parentOp) || isa<IfDefOp>(parentOp)) {
-    ++ifdefDepth;
-    parentOp = parentOp->getParentOp();
-  }
-
-  os.indent(state.currentIndent - ifdefDepth * INDENT_AMOUNT);
-  os << declWord;
+  os.indent(blockDeclarationIndentLevel) << declWord;
   if (!declWord.empty())
     os << ' ';
   if (emitter.printPackedType(stripUnpackedTypes(op->getResult(0).getType()),
@@ -3567,6 +3603,7 @@ void StmtEmitter::collectNamesEmitDecls(Block &block) {
     // This is important to maintain incrementally after each statement, because
     // each statement can generate spills when they are overly-long.
     blockDeclarationInsertPoint = rearrangableStream.getCursor();
+    blockDeclarationIndentLevel = state.currentIndent;
   }
 
   os << '\n';

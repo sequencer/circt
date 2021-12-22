@@ -45,8 +45,9 @@ def LowerFIRRTLTypes : Pass<"firrtl-lower-types", "firrtl::CircuitOp"> {
   let constructor = "circt::firrtl::createLowerFIRRTLTypesPass()";
   let options = [
     Option<"flattenAggregateMemData", "flatten-mem", "bool", "false",
-           "Concat all elements of the aggregate data into a single element.">
-
+           "Concat all elements of the aggregate data into a single element.">,
+    Option<"preserveAggregate", "preserve-aggregate", "bool", "false",
+           "(Experimental) Preserve aggregate vectors/bundles if possible.">
   ];
 }
 
@@ -153,7 +154,7 @@ def ExpandWhens : Pass<"firrtl-expand-whens", "firrtl::FModuleOp"> {
   let constructor = "circt::firrtl::createExpandWhensPass()";
 }
 
-def LowerCHIRRTL : Pass<"firrtl-lower-chirrtl", "firrtl::FModuleOp"> {
+def LowerCHIRRTLPass : Pass<"firrtl-lower-chirrtl", "firrtl::FModuleOp"> {
   let summary = "Infer the memory ports of SeqMem and CombMem";
   let description = [{
       This pass finds the CHIRRTL behavioral memories and their ports, and

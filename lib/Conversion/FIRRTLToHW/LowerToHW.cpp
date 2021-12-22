@@ -72,9 +72,7 @@ static Type lowerType(Type type) {
       Type etype = lowerType(element.type);
       if (!etype)
         return {};
-      // TODO: make hw::StructType contain StringAttrs.
-      auto name = StringAttr::get(element.name.getValue(), type.getContext());
-      hwfields.push_back(hw::StructType::FieldInfo{name, etype});
+      hwfields.push_back(hw::StructType::FieldInfo{element.name, etype});
     }
     return hw::StructType::get(type.getContext(), hwfields);
   }
@@ -190,8 +188,9 @@ static void moveVerifAnno(ModuleOp top, AnnotationSet &annos,
     SmallVector<NamedAttribute> old;
     for (auto i : top->getAttrs())
       old.push_back(i);
-    old.emplace_back(StringAttr::get(attrBase, ctx),
-                     hw::OutputFileAttr::getAsDirectory(ctx, dir.getValue()));
+    old.emplace_back(
+        StringAttr::get(attrBase, ctx),
+        hw::OutputFileAttr::getAsDirectory(ctx, dir.getValue(), true, true));
     top->setAttrs(old);
   }
   if (auto file = anno.getMember<StringAttr>("filename")) {
@@ -1110,7 +1109,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   template <typename ResultOpType, typename... CtorArgTypes>
   LogicalResult setLoweringTo(Operation *orig, CtorArgTypes... args);
   void emitRandomizePrologIfNeeded();
-  void initializeRegister(Value reg, Value resetSignal);
+  void initializeRegister(Value reg);
 
   void runWithInsertionPointAtEndOfBlock(std::function<void(void)> fn,
                                          Region &region);
@@ -1136,8 +1135,8 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
                                  std::function<void(void)> elseCtor = {});
   void addIfProceduralBlock(Value cond, std::function<void(void)> thenCtor,
                             std::function<void(void)> elseCtor = {});
-  Value getExtOrTruncArrayValue(Value array, FIRRTLType sourceType,
-                                FIRRTLType destType, bool allowTruncate);
+  Value getExtOrTruncAggregateValue(Value array, FIRRTLType sourceType,
+                                    FIRRTLType destType, bool allowTruncate);
 
   // Create a temporary wire at the current insertion point, and try to
   // eliminate it later as part of lowering post processing.
@@ -1484,13 +1483,12 @@ Value FIRRTLLowering::getLoweredValue(Value value) {
   return result;
 }
 
-/// Return the lowered array value whose type is converted into `destType`.
+/// Return the lowered aggregate value whose type is converted into `destType`.
 /// We have to care about the extension/truncation/signedness of each element.
-/// If returns a null value for complex arrays such as arrays with bundles.
-Value FIRRTLLowering::getExtOrTruncArrayValue(Value array,
-                                              FIRRTLType sourceType,
-                                              FIRRTLType destType,
-                                              bool allowTruncate) {
+Value FIRRTLLowering::getExtOrTruncAggregateValue(Value array,
+                                                  FIRRTLType sourceType,
+                                                  FIRRTLType destType,
+                                                  bool allowTruncate) {
   SmallVector<Value> resultBuffer;
 
   // Helper function to cast each element of array to dest type.
@@ -1541,6 +1539,30 @@ Value FIRRTLLowering::getExtOrTruncArrayValue(Value array,
           resultBuffer.push_back(array);
           return success();
         })
+        .Case<BundleType>([&](BundleType srcStructType) {
+          auto destStructType = destType.cast<BundleType>();
+          unsigned size = resultBuffer.size();
+
+          // TODO: We don't support partial connects for bundles for now.
+          if (destStructType.getNumElements() != srcStructType.getNumElements())
+            return failure();
+
+          for (auto elem : enumerate(destStructType.getElements())) {
+            auto structExtract =
+                builder.create<hw::StructExtractOp>(src, elem.value().name);
+            if (failed(recurse(structExtract,
+                               srcStructType.getElementType(elem.index()),
+                               destStructType.getElementType(elem.index()))))
+              return failure();
+          }
+          SmallVector<Value> temp(resultBuffer.begin() + size,
+                                  resultBuffer.end());
+          auto newStruct = builder.createOrFold<hw::StructCreateOp>(
+              lowerType(destStructType), temp);
+          resultBuffer.resize(size);
+          resultBuffer.push_back(newStruct);
+          return success();
+        })
         .Case<IntType>([&](auto) {
           if (auto result = cast(src, srcType, destType)) {
             resultBuffer.push_back(result);
@@ -1588,14 +1610,15 @@ Value FIRRTLLowering::getLoweredAndExtendedValue(Value value, Type destType) {
     return getOrCreateIntConstant(destWidth, 0);
   }
 
-  if (auto array = result.getType().dyn_cast<hw::ArrayType>()) {
+  // Aggregates values
+  if (result.getType().isa<hw::ArrayType, hw::StructType>()) {
     // Types already match.
     if (destType == value.getType())
       return result;
 
-    return getExtOrTruncArrayValue(result, value.getType().cast<FIRRTLType>(),
-                                   destType.cast<FIRRTLType>(),
-                                   /* allowTruncate */ false);
+    return getExtOrTruncAggregateValue(
+        result, value.getType().cast<FIRRTLType>(), destType.cast<FIRRTLType>(),
+        /* allowTruncate */ false);
   }
 
   auto srcWidth = result.getType().cast<IntegerType>().getWidth();
@@ -1647,14 +1670,15 @@ Value FIRRTLLowering::getLoweredAndExtOrTruncValue(Value value, Type destType) {
     return getOrCreateIntConstant(destWidth, 0);
   }
 
-  if (auto array = result.getType().dyn_cast<hw::ArrayType>()) {
+  // Aggregates values
+  if (result.getType().isa<hw::ArrayType, hw::StructType>()) {
     // Types already match.
     if (destType == value.getType())
       return result;
 
-    return getExtOrTruncArrayValue(result, value.getType().cast<FIRRTLType>(),
-                                   destType.cast<FIRRTLType>(),
-                                   /* allowTruncate */ true);
+    return getExtOrTruncAggregateValue(
+        result, value.getType().cast<FIRRTLType>(), destType.cast<FIRRTLType>(),
+        /* allowTruncate */ true);
   }
 
   auto srcWidth = result.getType().cast<IntegerType>().getWidth();
@@ -2006,8 +2030,15 @@ LogicalResult FIRRTLLowering::visitExpr(SubfieldOp op) {
     return setLowering(op, Value());
 
   auto resultType = lowerType(op->getResult(0).getType());
-  Value value = getLoweredValue(op.input());
+  Value value = getPossiblyInoutLoweredValue(op.input());
   assert(resultType && value && "subfield type lowering failed");
+
+  // If the value has an inout type, we need to lower to StructFieldInOutOp.
+  if (value.getType().isa<sv::InOutType>()) {
+    auto field =
+        op.input().getType().cast<BundleType>().getElementName(op.fieldIndex());
+    return setLoweringTo<sv::StructFieldInOutOp>(op, value, field);
+  }
 
   return setLoweringTo<hw::StructExtractOp>(
       op, resultType, value,
@@ -2106,7 +2137,7 @@ void FIRRTLLowering::emitRandomizePrologIfNeeded() {
   randomizePrologEmitted = true;
 }
 
-void FIRRTLLowering::initializeRegister(Value reg, Value resetSignal) {
+void FIRRTLLowering::initializeRegister(Value reg) {
   // Construct and return a new reference to `RANDOM.  It is always a 32-bit
   // unsigned expression.  Calls to $random have side effects, so we use
   // VerbatimExprSEOp.
@@ -2174,6 +2205,13 @@ void FIRRTLLowering::initializeRegister(Value reg, Value resetSignal) {
               recurse(arrayIndex, a.getElementType());
             }
           })
+          .Case<hw::StructType>([&](hw::StructType s) {
+            for (auto elem : s.getElements()) {
+              auto field =
+                  builder.create<sv::StructFieldInOutOp>(reg, elem.name);
+              recurse(field, elem.type);
+            }
+          })
           .Default([&](auto type) { emitRandomInit(reg, type); });
     };
     recurse(reg, type);
@@ -2185,13 +2223,7 @@ void FIRRTLLowering::initializeRegister(Value reg, Value resetSignal) {
     addToInitialBlock([&]() {
       emitRandomizePrologIfNeeded();
       circuitState.used_RANDOMIZE_REG_INIT = 1;
-      addToIfDefProceduralBlock("RANDOMIZE_REG_INIT", [&]() {
-        if (resetSignal) {
-          addIfProceduralBlock(resetSignal, {}, [&]() { randomInit(); });
-        } else {
-          randomInit();
-        }
-      });
+      addToIfDefProceduralBlock("RANDOMIZE_REG_INIT", [&]() { randomInit(); });
     });
   });
 }
@@ -2213,7 +2245,7 @@ LogicalResult FIRRTLLowering::visitDecl(RegOp op) {
       builder.create<sv::RegOp>(resultType, op.nameAttr(), symName);
   (void)setLowering(op, regResult);
 
-  initializeRegister(regResult, Value());
+  initializeRegister(regResult);
 
   return success();
 }
@@ -2265,7 +2297,7 @@ LogicalResult FIRRTLLowering::visitDecl(RegResetOp op) {
                      ::ResetType::SyncReset, sv::EventControl::AtPosEdge,
                      resetSignal, std::function<void()>(), resetFn);
   }
-  initializeRegister(regResult, resetSignal);
+  initializeRegister(regResult);
   return success();
 }
 
@@ -2820,14 +2852,22 @@ LogicalResult FIRRTLLowering::visitExpr(InvalidValueOp op) {
     // not attach a symbol name.
     return setLoweringTo<sv::WireOp>(op, resultTy, ".invalid_analog");
 
+  // We don't allow aggregate values which contain values of analog types.
+  if (op.getType().cast<FIRRTLType>().containsAnalog())
+    return failure();
+
   // We lower invalid to 0.  TODO: the FIRRTL spec mentions something about
   // lowering it to a random value, we should see if this is what we need to
   // do.
-  if (auto intType = resultTy.dyn_cast<IntegerType>()) {
-    if (intType.getWidth() == 0) // Let the caller handle zero width values.
+  if (auto bitwidth = firrtl::getBitWidth(op.getType().cast<FIRRTLType>())) {
+    if (bitwidth.getValue() == 0) // Let the caller handle zero width values.
       return failure();
-    return setLowering(
-        op, getOrCreateIntConstant(resultTy.getIntOrFloatBitWidth(), 0));
+
+    auto constant = getOrCreateIntConstant(bitwidth.getValue(), 0);
+    // If the result is an aggregate value, we have to bitcast the constant.
+    if (!resultTy.isa<IntegerType>())
+      constant = builder.create<hw::BitcastOp>(resultTy, constant);
+    return setLowering(op, constant);
   }
 
   // Invalid for bundles isn't supported.
@@ -2956,9 +2996,11 @@ LogicalResult FIRRTLLowering::visitStmt(ConnectOp op) {
   if (!destVal.getType().isa<hw::InOutType>())
     return op.emitError("destination isn't an inout type");
 
+  auto *definingOp = getFieldRefFromValue(dest).getValue().getDefiningOp();
+
   // If this is an assignment to a register, then the connect implicitly
   // happens under the clock that gates the register.
-  if (auto regOp = dyn_cast_or_null<RegOp>(dest.getDefiningOp())) {
+  if (auto regOp = dyn_cast_or_null<RegOp>(definingOp)) {
     Value clockVal = getLoweredValue(regOp.clockVal());
     if (!clockVal)
       return failure();
@@ -2970,7 +3012,7 @@ LogicalResult FIRRTLLowering::visitStmt(ConnectOp op) {
 
   // If this is an assignment to a RegReset, then the connect implicitly
   // happens under the clock and reset that gate the register.
-  if (auto regResetOp = dyn_cast_or_null<RegResetOp>(dest.getDefiningOp())) {
+  if (auto regResetOp = dyn_cast_or_null<RegResetOp>(definingOp)) {
     Value clockVal = getLoweredValue(regResetOp.clockVal());
     Value resetSignal = getLoweredValue(regResetOp.resetSignal());
     if (!clockVal || !resetSignal)
@@ -3007,9 +3049,11 @@ LogicalResult FIRRTLLowering::visitStmt(PartialConnectOp op) {
   if (!destVal.getType().isa<hw::InOutType>())
     return op.emitError("destination isn't an inout type");
 
+  auto *definingOp = getFieldRefFromValue(dest).getValue().getDefiningOp();
+
   // If this is an assignment to a register, then the connect implicitly
   // happens under the clock that gates the register.
-  if (auto regOp = dyn_cast_or_null<RegOp>(dest.getDefiningOp())) {
+  if (auto regOp = dyn_cast_or_null<RegOp>(definingOp)) {
     Value clockVal = getLoweredValue(regOp.clockVal());
     if (!clockVal)
       return failure();
@@ -3021,7 +3065,7 @@ LogicalResult FIRRTLLowering::visitStmt(PartialConnectOp op) {
 
   // If this is an assignment to a RegReset, then the connect implicitly
   // happens under the clock and reset that gate the register.
-  if (auto regResetOp = dyn_cast_or_null<RegResetOp>(dest.getDefiningOp())) {
+  if (auto regResetOp = dyn_cast_or_null<RegResetOp>(definingOp)) {
     Value clockVal = getLoweredValue(regResetOp.clockVal());
     Value resetSignal = getLoweredValue(regResetOp.resetSignal());
     if (!clockVal || !resetSignal)

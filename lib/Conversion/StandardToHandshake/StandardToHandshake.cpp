@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -1160,6 +1161,8 @@ public:
     addLegalDialect<HandshakeDialect>();
     addLegalDialect<StandardOpsDialect>();
     addLegalDialect<arith::ArithmeticDialect>();
+    addIllegalDialect<scf::SCFDialect>();
+    addIllegalDialect<mlir::AffineDialect>();
     /// The root function operation to be replaced is marked dynamically legal
     /// based on the lowering status of the given function, see
     /// PartialLowerFuncOp.
@@ -1243,110 +1246,6 @@ LogicalResult partiallyLowerFuncOp(
     MLIRContext *ctx, TFuncOp funcOp) {
   return lowerToHandshake<PartialLowerFuncOp<TFuncOp>>(funcOp, ctx,
                                                        loweringFunc);
-}
-
-/// Rewrite affine.for operations in a handshake.func into its representations
-/// as a CFG in the standard dialect. Affine expressions in loop bounds will be
-/// expanded to code in the standard dialect that actually computes them. We
-/// combine the lowering of affine loops in the following two conversions:
-/// [AffineToStandard](https://mlir.llvm.org/doxygen/AffineToStandard_8cpp.html),
-/// [SCFToStandard](https://mlir.llvm.org/doxygen/SCFToStandard_8cpp_source.html)
-/// into this function.
-/// The affine memory operations will be preserved until other rewrite
-/// functions, e.g.,`replaceMemoryOps`, are called. Any affine analysis, e.g.,
-/// getting dependence information, should be carried out before calling this
-/// function; otherwise, the affine for loops will be destructed and key
-/// information will be missing.
-LogicalResult rewriteAffineFor(handshake::FuncOp f,
-                               ConversionPatternRewriter &rewriter) {
-  // Get all affine.for operations in the function body.
-  SmallVector<mlir::AffineForOp, 8> forOps;
-  f.walk([&](mlir::AffineForOp op) { forOps.push_back(op); });
-
-  // TODO: how to deal with nested loops?
-  for (unsigned i = 0, e = forOps.size(); i < e; i++) {
-    auto forOp = forOps[i];
-
-    // Insert lower and upper bounds right at the position of the original
-    // affine.for operation.
-    rewriter.setInsertionPoint(forOp);
-    auto loc = forOp.getLoc();
-    auto lowerBound = expandAffineMap(rewriter, loc, forOp.getLowerBoundMap(),
-                                      forOp.getLowerBoundOperands());
-    auto upperBound = expandAffineMap(rewriter, loc, forOp.getUpperBoundMap(),
-                                      forOp.getUpperBoundOperands());
-    if (!lowerBound || !upperBound)
-      return failure();
-    auto step = rewriter.create<arith::ConstantIndexOp>(loc, forOp.getStep());
-
-    // Build blocks for a common for loop. initBlock and initPosition are the
-    // block that contains the current forOp, and the position of the forOp.
-    auto *initBlock = rewriter.getInsertionBlock();
-    auto initPosition = rewriter.getInsertionPoint();
-
-    // Split the current block into several parts. `endBlock` contains the code
-    // starting from forOp. `conditionBlock` will have the condition branch.
-    // `firstBodyBlock` is the loop body, and `lastBodyBlock` is about the loop
-    // iterator stepping. Here we move the body region of the AffineForOp here
-    // and split it into `conditionBlock`, `firstBodyBlock`, and
-    // `lastBodyBlock`.
-    // TODO: is there a simpler API for doing so?
-    auto *endBlock = rewriter.splitBlock(initBlock, initPosition);
-    // Split and get the references to different parts (blocks) of the original
-    // loop body.
-    auto *conditionBlock = &forOp.region().front();
-    auto *firstBodyBlock =
-        rewriter.splitBlock(conditionBlock, conditionBlock->begin());
-    auto *lastBodyBlock =
-        rewriter.splitBlock(firstBodyBlock, firstBodyBlock->end());
-    rewriter.inlineRegionBefore(forOp.region(), endBlock);
-
-    // The loop IV is the first argument of the conditionBlock.
-    auto iv = conditionBlock->getArgument(0);
-
-    // Get the loop terminator, which should be the last operation of the
-    // original loop body. And `firstBodyBlock` points to that loop body.
-    auto terminator = dyn_cast<mlir::AffineYieldOp>(firstBodyBlock->back());
-    if (!terminator)
-      return failure();
-
-    // First, we fill the content of the lastBodyBlock with how the loop
-    // iterator steps.
-    rewriter.setInsertionPointToEnd(lastBodyBlock);
-    auto stepped = rewriter.create<arith::AddIOp>(loc, iv, step).getResult();
-
-    // Next, we get the loop carried values, which are terminator operands.
-    SmallVector<Value, 8> loopCarried;
-    loopCarried.push_back(stepped);
-    loopCarried.append(terminator.operand_begin(), terminator.operand_end());
-    rewriter.create<mlir::BranchOp>(loc, conditionBlock, loopCarried);
-
-    // Then we fill in the condition block.
-    rewriter.setInsertionPointToEnd(conditionBlock);
-    auto comparison = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::slt, iv, upperBound.getValue()[0]);
-
-    rewriter.create<mlir::CondBranchOp>(loc, comparison, firstBodyBlock,
-                                        ArrayRef<Value>(), endBlock,
-                                        ArrayRef<Value>());
-
-    // We also insert the branch operation at the end of the initBlock.
-    rewriter.setInsertionPointToEnd(initBlock);
-    // TODO: should we add more operands here?
-    rewriter.create<mlir::BranchOp>(loc, conditionBlock,
-                                    lowerBound.getValue()[0]);
-
-    // Finally, setup the firstBodyBlock.
-    rewriter.setInsertionPointToEnd(firstBodyBlock);
-    // TODO: is it necessary to add this explicit branch operation?
-    rewriter.create<mlir::BranchOp>(loc, lastBodyBlock);
-
-    // Remove the original forOp and the terminator in the loop body.
-    rewriter.eraseOp(terminator);
-    rewriter.eraseOp(forOp);
-  }
-
-  return success();
 }
 
 struct HandshakeCanonicalizePattern : public ConversionPattern {
@@ -1447,11 +1346,6 @@ LogicalResult lowerFuncOp(mlir::FuncOp funcOp, MLIRContext *ctx) {
       },
       ctx, funcOp));
 
-  // Rewrite affine.for operations.
-  if (failed(partiallyLowerFuncOp<handshake::FuncOp>(rewriteAffineFor, ctx,
-                                                     newFuncOp)))
-    return newFuncOp.emitOpError("failed to rewrite Affine loops");
-
   // Perform dataflow conversion
   MemRefToMemoryAccessOp memOps;
   returnOnError(partiallyLowerFuncOp<handshake::FuncOp>(
@@ -1520,107 +1414,168 @@ struct HandshakeInsertBufferPass
     // will lower down to a handshake bundle.
     return arg.getType().isIntOrFloat() || arg.getType().isa<NoneType>();
   }
-  // Perform a depth first search and insert buffers when cycles are detected.
-  void bufferCyclesStrategy() {
-    auto f = getOperation();
-    DenseSet<Operation *> opVisited;
-    DenseSet<Operation *> opInFlight;
 
-    // Traverse each use of each argument of the entry block.
-    auto builder = OpBuilder(f.getContext());
-    for (auto &arg : f.getBody().front().getArguments()) {
-      if (!shouldBufferArgument(arg))
+  static bool isUnbufferedChannel(Operation *definingOp, Operation *usingOp) {
+    return !isa_and_nonnull<BufferOp>(definingOp) && !isa<BufferOp>(usingOp);
+  }
+
+  void insertBuffer(Location loc, Value operand, OpBuilder &builder,
+                    unsigned numSlots, bool sequential) {
+    auto ip = builder.saveInsertionPoint();
+    builder.setInsertionPointAfterValue(operand);
+    auto bufferOp = builder.create<handshake::BufferOp>(
+        loc, operand.getType(), numSlots, operand, sequential);
+    operand.replaceUsesWithIf(
+        bufferOp,
+        function_ref<bool(OpOperand &)>([](OpOperand &operand) -> bool {
+          return !isa<handshake::BufferOp>(operand.getOwner());
+        }));
+    builder.restoreInsertionPoint(ip);
+  }
+
+  // Inserts a buffer at a specific operand use.
+  void bufferOperand(OpOperand &use, OpBuilder &builder, size_t numSlots,
+                     bool sequential) {
+    auto usingOp = use.getOwner();
+    Value usingValue = use.get();
+
+    builder.setInsertionPoint(usingOp);
+    auto buffer = builder.create<handshake::BufferOp>(
+        usingValue.getLoc(), usingValue.getType(),
+        /*slots=*/numSlots, usingValue,
+        /*sequential=*/sequential);
+    usingOp->setOperand(use.getOperandNumber(), buffer);
+  }
+
+  // Inserts buffers at all operands of an operation.
+  void bufferOperands(Operation *op, OpBuilder builder, size_t numSlots,
+                      bool sequential) {
+    for (auto &use : op->getOpOperands()) {
+      auto *srcOp = use.get().getDefiningOp();
+      if (srcOp && isa<handshake::BufferOp>(srcOp))
         continue;
-      for (auto &operand : arg.getUses()) {
-        if (opVisited.count(operand.getOwner()) == 0)
-          insertBufferDFS(operand.getOwner(), builder, bufferSize, opVisited,
-                          opInFlight);
-      }
+      bufferOperand(use, builder, numSlots, sequential);
     }
   }
 
-  // Perform a depth first search and add a buffer to any un-buffered channel.
-  void bufferAllStrategy() {
-    auto f = getOperation();
-    auto builder = OpBuilder(f.getContext());
+  // Inserts buffers at all results of an operation
+  void bufferResults(OpBuilder &builder, Operation *op, unsigned numSlots,
+                     bool sequential) {
+    for (auto res : op->getResults()) {
+      Operation *user = *res.getUsers().begin();
+      if (isa<handshake::BufferOp>(user))
+        continue;
+      insertBuffer(op->getLoc(), res, builder, numSlots, sequential);
+    }
+  };
+
+  // Perform a depth first search and add a buffer to any un-buffered channel
+  // where it makes reasonable sense.
+  void bufferAllStrategy(handshake::FuncOp f, OpBuilder &builder,
+                         unsigned numSlots, bool sequential = true) {
+
     for (auto &arg : f.getArguments()) {
       if (!shouldBufferArgument(arg))
         continue;
       for (auto &use : arg.getUses())
-        insertBufferRecursive(use, builder, bufferSize,
-                              [](Operation *definingOp, Operation *usingOp) {
-                                return !isa_and_nonnull<BufferOp>(definingOp) &&
-                                       !isa<BufferOp>(usingOp);
-                              });
+        insertBufferRecursive(use, builder, numSlots, isUnbufferedChannel,
+                              /*sequential=*/sequential);
     }
   }
 
-  /// DFS-based graph cycle detection and naive buffer insertion. Exactly one
-  /// 2-slot non-transparent buffer will be inserted into each graph cycle.
-  void insertBufferDFS(Operation *op, OpBuilder &builder, unsigned numSlots,
-                       DenseSet<Operation *> &opVisited,
-                       DenseSet<Operation *> &opInFlight) {
-    // Mark operation as visited and push into the stack.
-    opVisited.insert(op);
-    opInFlight.insert(op);
+  // Combination of bufferCyclesStrategy and bufferAllStrategy, where we add a
+  // sequential buffer on graph cycles, and add FIFO buffers on all other
+  // connections.
+  void bufferAllFIFOStrategy(handshake::FuncOp f, OpBuilder &builder) {
+    // First, buffer cycles with sequential buffers
+    bufferCyclesStrategy(f, builder, /*numSlots=*/2, /*sequential=*/true);
+    // Then, buffer remaining channels with transparent FIFO buffers
+    bufferAllStrategy(f, builder, bufferSize, /*sequential=*/false);
+  }
 
-    // Traverse all uses of the current operation.
-    for (auto &operand : op->getUses()) {
+  // Perform a depth first search and insert buffers when cycles are detected.
+  void bufferCyclesStrategy(handshake::FuncOp f, OpBuilder &builder,
+                            unsigned numSlots, bool /*sequential*/ = true) {
+    // Cycles can only occur at merge-like operations so those are our buffering
+    // targets. Placing the buffer at the output of the merge-like op,
+    // as opposed to naivly placing buffers *whenever* cycles are detected
+    // ensures that we don't place a bunch of buffers on each input of the
+    // merge-like op.
+    auto isSeqBuffer = [](auto op) {
+      auto bufferOp = dyn_cast<handshake::BufferOp>(op);
+      return bufferOp && bufferOp.isSequential();
+    };
+
+    for (auto mergeOp : f.getOps<MergeLikeOpInterface>()) {
+      // We insert a sequential buffer whenever the op is determined to be
+      // within a cycle (to break combinational cycles). Else, place a FIFO
+      // buffer.
+      bool sequential = inCycle(mergeOp, isSeqBuffer);
+      bufferResults(builder, mergeOp, numSlots, sequential);
+    }
+  }
+
+  // Returns true if 'src' is within a cycle. 'breaksCycle' is a function which
+  // determines whether an operation breaks a cycle.
+  bool inCycle(Operation *src,
+               llvm::function_ref<bool(Operation *)> breaksCycle,
+               Operation *curr = nullptr, SetVector<Operation *> path = {}) {
+    // If visiting the source node, then we're in a cycle.
+    if (curr == src)
+      return true;
+
+    // Initial case; set current node to source node
+    if (curr == nullptr) {
+      curr = src;
+    }
+
+    path.insert(curr);
+    for (auto &operand : curr->getUses()) {
       auto *user = operand.getOwner();
 
-      // If graph cycle detected, insert a BufferOp into the edge.
-      if (opInFlight.count(user) != 0 && !isa<handshake::BufferOp>(op) &&
-          !isa<handshake::BufferOp>(user)) {
-        auto value = operand.get();
-
-        builder.setInsertionPointAfter(op);
-        auto bufferOp =
-            builder.create<handshake::BufferOp>(op->getLoc(), value.getType(),
-                                                /*slots=*/numSlots, value,
-                                                /*sequential=*/true);
-        value.replaceUsesWithIf(
-            bufferOp,
-            function_ref<bool(OpOperand &)>([](OpOperand &operand) -> bool {
-              return !isa<handshake::BufferOp>(operand.getOwner());
-            }));
-      }
-      // For unvisited operations, recursively call insertBufferDFS() method.
-      else if (opVisited.count(user) == 0)
-        insertBufferDFS(user, builder, bufferSize, opVisited, opInFlight);
+      // We might encounter a cycle, but we only care about the case when such
+      // cycles include 'src'.
+      if (path.count(user) && user != src)
+        continue;
+      if (breaksCycle(curr))
+        continue;
+      if (inCycle(src, breaksCycle, user, path))
+        return true;
     }
-    // Pop operation out of the stack.
-    opInFlight.erase(op);
+    return false;
   }
 
   void
   insertBufferRecursive(OpOperand &use, OpBuilder builder, size_t numSlots,
-                        function_ref<bool(Operation *, Operation *)> callback) {
+                        function_ref<bool(Operation *, Operation *)> callback,
+                        bool sequential) {
     auto oldValue = use.get();
     auto *definingOp = oldValue.getDefiningOp();
     auto *usingOp = use.getOwner();
     if (callback(definingOp, usingOp)) {
-      builder.setInsertionPoint(usingOp);
-      auto buffer = builder.create<handshake::BufferOp>(
-          oldValue.getLoc(), oldValue.getType(),
-          /*slots=*/numSlots, oldValue,
-          /*sequential=*/true);
-      use.getOwner()->setOperand(use.getOperandNumber(), buffer);
+      bufferOperand(use, builder, numSlots, sequential);
     }
 
     for (auto &childUse : usingOp->getUses())
       if (!isa<handshake::BufferOp>(childUse.getOwner()))
-        insertBufferRecursive(childUse, builder, numSlots, callback);
+        insertBufferRecursive(childUse, builder, numSlots, callback,
+                              sequential);
   }
 
   void runOnOperation() override {
     if (strategies.empty())
       strategies = {"all"};
 
+    auto f = getOperation();
+    auto builder = OpBuilder(f.getContext());
+
     for (auto strategy : strategies) {
       if (strategy == "cycles")
-        bufferCyclesStrategy();
+        bufferCyclesStrategy(f, builder, bufferSize);
       else if (strategy == "all")
-        bufferAllStrategy();
+        bufferAllStrategy(f, builder, bufferSize);
+      else if (strategy == "allFIFO")
+        bufferAllFIFOStrategy(f, builder);
       else {
         getOperation().emitOpError() << "Unknown buffer strategy: " << strategy;
         signalPassFailure();
@@ -1628,6 +1583,18 @@ struct HandshakeInsertBufferPass
       }
     }
   }
+};
+
+struct ConvertSelectOps : public OpConversionPattern<mlir::SelectOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(mlir::SelectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<handshake::MuxOp>(
+        op, adaptor.getCondition(),
+        SmallVector<Value>{adaptor.getFalseValue(), adaptor.getTrueValue()});
+    return success();
+  };
 };
 
 struct HandshakeRemoveBlockPass
@@ -1647,9 +1614,22 @@ struct HandshakeDataflowPass
       }
     }
 
-    // Legalize the resulting regions, which can have no basic blocks.
-    for (auto func : m.getOps<handshake::FuncOp>())
+    // Legalize the resulting regions, removing basic blocks and performing
+    // any simple conversions.
+    for (auto func : m.getOps<handshake::FuncOp>()) {
       removeBasicBlocks(func);
+      if (failed(postDataflowConvert(func)))
+        return signalPassFailure();
+    }
+  }
+
+  LogicalResult postDataflowConvert(handshake::FuncOp op) {
+    ConversionTarget target(getContext());
+    target.addLegalDialect<handshake::HandshakeDialect>();
+    target.addIllegalOp<mlir::SelectOp>();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ConvertSelectOps>(&getContext());
+    return applyPartialConversion(op, target, std::move(patterns));
   }
 };
 

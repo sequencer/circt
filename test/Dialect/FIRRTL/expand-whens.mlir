@@ -299,6 +299,55 @@ firrtl.module @nested2(in %clock : !firrtl.clock, in %p0 : !firrtl.uint<1>, in %
 //CHECK-NEXT:   firrtl.connect %out, %9 : !firrtl.uint<2>, !firrtl.uint<2>
 //CHECK-NEXT: }
 
+// Test invalid value optimization
+// CHECK-LABEL: firrtl.module @InvalidValues
+firrtl.module @InvalidValues(in %p: !firrtl.uint<1>, out %out0: !firrtl.uint<2>, out %out1: !firrtl.uint<2>, out %out2: !firrtl.uint<2>, out %out3: !firrtl.uint<2>, out %out4: !firrtl.uint<2>, out %out5: !firrtl.uint<2>) {
+  %c2_ui2 = firrtl.constant 2 : !firrtl.uint<2>
+  %invalid_ui2 = firrtl.invalidvalue : !firrtl.uint<2>
+
+  firrtl.when %p  {
+    firrtl.connect %out0, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  } else  {
+    firrtl.connect %out0, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out0, %c2_ui2
+
+  firrtl.when %p  {
+    firrtl.connect %out1, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  } else  {
+    firrtl.connect %out1, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out1, %c2_ui2
+
+  firrtl.connect %out2, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  firrtl.when %p  {
+    firrtl.connect %out2, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out2, %c2_ui2
+
+  firrtl.connect %out3, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  firrtl.when %p  {
+    firrtl.skip
+  } else  {
+    firrtl.connect %out3, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out3, %c2_ui2
+
+  firrtl.connect %out4, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  firrtl.when %p  {
+    firrtl.connect %out4, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out4, %c2_ui2
+
+  firrtl.connect %out5, %c2_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  firrtl.when %p  {
+    firrtl.skip
+  } else  {
+    firrtl.connect %out5, %invalid_ui2 : !firrtl.uint<2>, !firrtl.uint<2>
+  }
+  // CHECK: firrtl.connect %out5, %c2_ui2
+}
+    
 // Test that registers are multiplexed with themselves.
 firrtl.module @register_mux(in %p : !firrtl.uint<1>, in %clock: !firrtl.clock) {
   %c0_ui2 = firrtl.constant 0 : !firrtl.uint<2>
@@ -462,5 +511,23 @@ firrtl.module @vector_of_bundle(in %p : !firrtl.uint<1>, out %ret: !firrtl.vecto
   firrtl.connect %1, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
   // CHECK-NOT: firrtl.connect %1, %c0_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
   // CHECK:     firrtl.connect %1, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+}
+
+// CHECK-LABEL: @aggregate_register
+firrtl.module @aggregate_register(in %clock: !firrtl.clock) {
+  %0 = firrtl.reg %clock : !firrtl.bundle<a : uint<1>, b : uint<1>>
+  // CHECK:      %1 = firrtl.subfield %0(0)
+  // CHECK-NEXT: firrtl.connect %1, %1
+  // CHECK-NEXT: %2 = firrtl.subfield %0(1)
+  // CHECK-NEXT: firrtl.connect %2, %2
+}
+
+// CHECK-LABEL: @aggregate_regreset
+firrtl.module @aggregate_regreset(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, in %resetval: !firrtl.vector<uint<1>, 2>) {
+  %0 = firrtl.regreset %clock, %reset, %resetval : !firrtl.uint<1>, !firrtl.vector<uint<1>, 2>, !firrtl.vector<uint<1>, 2>
+  // CHECK:      %1 = firrtl.subindex %0[0]
+  // CHECK-NEXT: firrtl.connect %1, %1
+  // CHECK-NEXT: %2 = firrtl.subindex %0[1]
+  // CHECK-NEXT: firrtl.connect %2, %2
 }
 }

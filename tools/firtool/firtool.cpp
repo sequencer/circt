@@ -14,6 +14,7 @@
 #include "circt/Conversion/ExportVerilog.h"
 #include "circt/Conversion/Passes.h"
 #include "circt/Dialect/Comb/CombDialect.h"
+#include "circt/Dialect/FIRRTL/CHIRRTLDialect.h"
 #include "circt/Dialect/FIRRTL/FIRParser.h"
 #include "circt/Dialect/FIRRTL/FIRRTLDialect.h"
 #include "circt/Dialect/FIRRTL/FIRRTLOps.h"
@@ -67,10 +68,6 @@ static cl::opt<std::string>
                    cl::value_desc("filename"), cl::init("-"));
 
 static cl::opt<bool>
-    parseOnly("parse-only",
-              cl::desc("Stop after parsing inputs and annotations"));
-
-static cl::opt<bool>
     splitInputFile("split-input-file",
                    cl::desc("Split the input file into pieces and process each "
                             "chunk independently"),
@@ -88,9 +85,6 @@ static cl::opt<bool> disableOptimization("disable-opt",
 static cl::opt<bool> inliner("inline",
                              cl::desc("Run the FIRRTL module inliner"),
                              cl::init(true));
-
-static cl::opt<bool> lowerToHW("lower-to-hw",
-                               cl::desc("run the lower-to-hw pass"));
 
 static cl::opt<bool> enableAnnotationWarning(
     "warn-on-unprocessed-annotations",
@@ -120,6 +114,10 @@ static cl::opt<bool> replSeqMem(
     cl::desc(
         "replace the seq mem for macro replacement and emit relevant metadata"),
     cl::init(false));
+static cl::opt<bool>
+    preserveAggregate("experimental-preserve-aggregate",
+                      cl::desc("preserve aggregate types in lower types"),
+                      cl::init(false));
 static cl::opt<std::string>
     replSeqMemCircuit("repl-seq-mem-circuit",
                       cl::desc("circuit root for seq mem metadata"),
@@ -200,25 +198,30 @@ static cl::opt<bool> newAnno("new-anno",
                              cl::init(false));
 
 enum OutputFormatKind {
-  OutputMLIR,
+  OutputParseOnly,
+  OutputIRFir,
+  OutputIRHW,
+  OutputIRVerilog,
   OutputVerilog,
   OutputSplitVerilog,
-  OutputVerilogIR,
   OutputDisabled
 };
 
 static cl::opt<OutputFormatKind> outputFormat(
     cl::desc("Specify output format:"),
-    cl::values(clEnumValN(OutputMLIR, "mlir", "Emit MLIR dialect"),
-               clEnumValN(OutputVerilog, "verilog", "Emit Verilog"),
-               clEnumValN(OutputSplitVerilog, "split-verilog",
-                          "Emit Verilog (one file per module; specify "
-                          "directory with -o=<dir>)"),
-               clEnumValN(OutputVerilogIR, "verilog-ir",
-                          "Emit IR after Verilog lowering"),
-               clEnumValN(OutputDisabled, "disable-output",
-                          "Do not output anything")),
-    cl::init(OutputMLIR));
+    cl::values(
+        clEnumValN(OutputParseOnly, "parse-only",
+                   "Emit FIR dialect after parsing"),
+        clEnumValN(OutputIRFir, "ir-fir", "Emit FIR dialect after pipeline"),
+        clEnumValN(OutputIRHW, "ir-hw", "Emit HW dialect"),
+        clEnumValN(OutputIRVerilog, "ir-verilog",
+                   "Emit IR after Verilog lowering"),
+        clEnumValN(OutputVerilog, "verilog", "Emit Verilog"),
+        clEnumValN(OutputSplitVerilog, "split-verilog",
+                   "Emit Verilog (one file per module; specify "
+                   "directory with -o=<dir>)"),
+        clEnumValN(OutputDisabled, "disable-output", "Do not output anything")),
+    cl::init(OutputVerilog));
 
 static cl::opt<bool>
     verifyPasses("verify-each",
@@ -303,23 +306,11 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
     return failure();
 
   // If the user asked for just a parse, stop here.
-  if (parseOnly) {
+  if (outputFormat == OutputParseOnly) {
     mlir::ModuleOp theModule = module.release();
-    switch (outputFormat) {
-    case OutputMLIR: {
-      auto outputTimer = ts.nest("Print .mlir output");
-      theModule->print(outputFile.getValue()->os());
-      return success();
-    }
-    case OutputDisabled:
-      return success();
-    case OutputVerilog:
-    case OutputSplitVerilog:
-    case OutputVerilogIR:
-      llvm::errs()
-          << "verilog emission is not supported in -parse-only mode.\n";
-      return failure();
-    }
+    auto outputTimer = ts.nest("Print .mlir output");
+    theModule->print(outputFile.getValue()->os());
+    return success();
   }
 
   // Apply any pass manager command line options.
@@ -359,7 +350,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
   // things up.
   if (lowerTypes) {
     pm.addNestedPass<firrtl::CircuitOp>(
-        firrtl::createLowerFIRRTLTypesPass(replSeqMem));
+        firrtl::createLowerFIRRTLTypesPass(replSeqMem, preserveAggregate));
     // Only enable expand whens if lower types is also enabled.
     if (expandWhens) {
       auto &modulePM = pm.nest<firrtl::CircuitOp>().nest<firrtl::FModuleOp>();
@@ -418,8 +409,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
         firrtl::createEmitOMIRPass(omirOutFile));
 
   // Lower if we are going to verilog or if lowering was specifically requested.
-  if (lowerToHW || outputFormat == OutputVerilog ||
-      outputFormat == OutputSplitVerilog || outputFormat == OutputVerilogIR) {
+  if (outputFormat != OutputIRFir) {
     pm.addPass(createLowerFIRRTLToHWPass(enableAnnotationWarning.getValue(),
                                          nonConstAsyncResetValueIsError));
     pm.addPass(sv::createHWMemSimImplPass(replSeqMem, ignoreReadEnableMem));
@@ -438,7 +428,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
 
   // Add passes specific to Verilog emission if we're going there.
   if (outputFormat == OutputVerilog || outputFormat == OutputSplitVerilog ||
-      outputFormat == OutputVerilogIR) {
+      outputFormat == OutputIRVerilog) {
     // Legalize unsupported operations within the modules.
     pm.nest<hw::HWModuleOp>().addPass(sv::createHWLegalizeModulesPass());
 
@@ -450,8 +440,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
 
     // Emit a single file or multiple files depending on the output format.
     switch (outputFormat) {
-    case OutputMLIR:
-    case OutputDisabled:
+    default:
       llvm_unreachable("can't reach this");
     case OutputVerilog:
       pm.addPass(createExportVerilogPass(outputFile.getValue()->os()));
@@ -459,7 +448,7 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
     case OutputSplitVerilog:
       pm.addPass(createExportSplitVerilogPass(outputFilename));
       break;
-    case OutputVerilogIR:
+    case OutputIRVerilog:
       // Run the ExportVerilog pass to get its lowering, but discard the output.
       pm.addPass(createExportVerilogPass(llvm::nulls()));
       break;
@@ -478,7 +467,8 @@ processBuffer(MLIRContext &context, TimingScope &ts, llvm::SourceMgr &sourceMgr,
   if (failed(pm.run(module.get())))
     return failure();
 
-  if (outputFormat == OutputMLIR || outputFormat == OutputVerilogIR) {
+  if (outputFormat == OutputIRFir || outputFormat == OutputIRHW ||
+      outputFormat == OutputIRVerilog) {
     auto outputTimer = ts.nest("Print .mlir output");
     module->print(outputFile.getValue()->os());
   }
@@ -594,8 +584,8 @@ static LogicalResult executeFirtool(MLIRContext &context) {
   }
 
   // Register our dialects.
-  context.loadDialect<firrtl::FIRRTLDialect, hw::HWDialect, comb::CombDialect,
-                      sv::SVDialect>();
+  context.loadDialect<chirrtl::CHIRRTLDialect, firrtl::FIRRTLDialect,
+                      hw::HWDialect, comb::CombDialect, sv::SVDialect>();
 
   // Process the input.
   if (failed(processInput(context, ts, std::move(input), outputFile)))

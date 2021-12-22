@@ -39,26 +39,34 @@ class Value:
     from .dialects import seq
     if name is None:
       name = self.name
-    if name is not None:
-      m = Value._reg_name.match(name)
-      if m:
-        basename = m.group(1)
-        reg_num = m.group(2)
-        name = f"{basename}__reg{int(reg_num)+1}"
-      else:
-        name = name + "__reg1"
+      if name is not None:
+        m = Value._reg_name.match(name)
+        if m:
+          basename = m.group(1)
+          reg_num = m.group(2)
+          name = f"{basename}__reg{int(reg_num)+1}"
+        else:
+          name = name + "__reg1"
     with get_user_loc():
       return seq.CompRegOp(self.value.type,
                            input=self.value,
                            clk=clk,
                            reset=rst,
-                           name=name)
+                           name=name,
+                           inner_sym=name)
+
+  @property
+  def _namehint_attrname(self):
+    if self.value.owner.name == "seq.compreg":
+      return "name"
+    return "sv.namehint"
 
   @property
   def name(self):
     owner = self.value.owner
-    if hasattr(owner, "attributes") and "name" in owner.attributes:
-      return ir.StringAttr(owner.attributes["name"]).value
+    if hasattr(owner,
+               "attributes") and self._namehint_attrname in owner.attributes:
+      return ir.StringAttr(owner.attributes[self._namehint_attrname]).value
     from circt.dialects import msft
     if isinstance(owner, ir.Block) and isinstance(owner.owner,
                                                   msft.MSFTModuleOp):
@@ -72,7 +80,7 @@ class Value:
   def name(self, new: str):
     owner = self.value.owner
     if hasattr(owner, "attributes"):
-      owner.attributes["name"] = ir.StringAttr.get(new)
+      owner.attributes[self._namehint_attrname] = ir.StringAttr.get(new)
     else:
       self._name = new
 

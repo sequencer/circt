@@ -424,6 +424,37 @@ hw.module @reg_1(%in4: i4, %in8: i8) -> (a : i3, b : i5) {
   hw.output %c, %d : i3,i5
 }
 
+// CHECK-LABEL: module struct_field_inout1(
+hw.module @struct_field_inout1(%a : !hw.inout<struct<b: i1>>) {
+  // CHECK: inout struct packed {logic b; } a);
+  // CHECK-EMPTY:
+  // CHECK-NEXT: assign a.b = 1'h1;
+  %true = hw.constant true
+  %0 = sv.struct_field_inout %a["b"] : !hw.inout<struct<b: i1>>
+  sv.assign %0, %true : i1
+}
+
+// CHECK-LABEL: module struct_field_inout2(
+hw.module @struct_field_inout2(%a: !hw.inout<struct<b: !hw.struct<c: i1>>>) {
+  // CHECK: inout struct packed {struct packed {logic c; } b; } a);
+  // CHECK-EMPTY:
+  // CHECK-NEXT: assign a.b.c = 1'h1;
+  %true = hw.constant true
+  %0 = sv.struct_field_inout %a["b"] : !hw.inout<struct<b: !hw.struct<c: i1>>>
+  %1 = sv.struct_field_inout %0["c"] : !hw.inout<struct<c: i1>>
+  sv.assign %1, %true : i1
+}
+
+// CHECK-LABEL: module AggregateConstantXZ(
+hw.module @AggregateConstantXZ() -> (res1: !hw.struct<foo: i2, bar: !hw.array<3xi4>>,
+                                     res2: !hw.struct<foo: i2, bar: !hw.array<3xi4>>) {
+  %0 = sv.constantX : !hw.struct<foo: i2, bar: !hw.array<3xi4>>
+  %1 = sv.constantZ : !hw.struct<foo: i2, bar: !hw.array<3xi4>>
+  // CHECK: assign res1 = 14'bx
+  // CHECK: assign res2 = 14'bz
+  hw.output %0, %1 : !hw.struct<foo: i2, bar: !hw.array<3xi4>>, !hw.struct<foo: i2, bar: !hw.array<3xi4>>
+}
+
 // CHECK-LABEL: issue508
 // https://github.com/llvm/circt/issues/508
 hw.module @issue508(%in1: i1, %in2: i1) {
@@ -1054,6 +1085,23 @@ hw.module @InlineAutomaticLogicInit(%a : i42, %b: i42, %really_really_long_port:
   }
 }
 
+// Issue #2335: https://github.com/llvm/circt/issues/2335
+// CHECK-LABEL: module AggregateTemporay(
+hw.module @AggregateTemporay(%clock: i1, %foo: i1, %bar: i25) {
+  %temp1 = sv.reg  : !hw.inout<!hw.struct<b: i1>>
+  %temp2 = sv.reg  : !hw.inout<!hw.array<5x!hw.array<5x!hw.struct<b: i1>>>>
+  sv.always posedge %clock  {
+    // CHECK: automatic struct packed {logic b; } [[T0:.+]] = foo;
+    // CHECK: automatic struct packed {logic b; }[4:0][4:0] [[T1:.+]] = /*cast(bit[4:0][4:0])*/bar;
+    %0 = hw.bitcast %foo : (i1) -> !hw.struct<b: i1>
+    sv.passign %temp1, %0 : !hw.struct<b: i1>
+    sv.passign %temp1, %0 : !hw.struct<b: i1>
+    %1 = hw.bitcast %bar : (i25) -> !hw.array<5x!hw.array<5x!hw.struct<b: i1>>>
+    sv.passign %temp2, %1 : !hw.array<5x!hw.array<5x!hw.struct<b: i1>>>
+    sv.passign %temp2, %1 : !hw.array<5x!hw.array<5x!hw.struct<b: i1>>>
+  }
+}
+
 //CHECK-LABEL: module XMR_src
 //CHECK: assign $root.a.b.c = a;
 //CHECK-NEXT: assign aa = d.e.f;
@@ -1149,3 +1197,13 @@ sv.bind #hw.innerNameRef<@NastyPortParent::@foo>
 // CHECK-NEXT:    ._lots24of_dots (foo__lots24of_dots)
 // CHECK-NEXT:    ._more_dots     (foo__more_dots)
 // CHECK-NEXT:  );
+
+// CHECK-LABEL:  hw.module @issue595
+// CHECK-NEXT:    %0 = sv.wire  {hw.verilogName = "_T"} : !hw.inout<i32>
+
+// CHECK-LABEL: hw.module @extInst2
+// CHECK-SAME: (%signed: i1 {hw.verilogName = "signed_0"}
+
+// CHECK-LABEL:  hw.module @remoteInstDut
+// CHECK:    %signed = sv.wire  {hw.verilogName = "signed_0"} : !hw.inout<i1>
+// CHECK:    %output = sv.reg  {hw.verilogName = "output_1"} : !hw.inout<i1>

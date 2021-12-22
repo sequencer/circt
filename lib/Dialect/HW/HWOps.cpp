@@ -1266,6 +1266,7 @@ static ParseResult parseArrayCreateOp(OpAsmParser &parser,
 static void printArrayCreateOp(OpAsmPrinter &p, ArrayCreateOp op) {
   p << " ";
   p.printOperands(op.inputs());
+  p.printOptionalAttrDict(op->getAttrs());
   p << " : " << op.inputs()[0].getType();
 }
 
@@ -1466,6 +1467,13 @@ static void printStructExtractOp(OpAsmPrinter &printer,
 void StructExtractOp::build(OpBuilder &builder, OperationState &odsState,
                             Value input, StructType::FieldInfo field) {
   build(builder, odsState, field.type, input, field.name);
+}
+
+void StructExtractOp::build(OpBuilder &builder, OperationState &odsState,
+                            Value input, StringAttr fieldAttr) {
+  auto structType = input.getType().cast<StructType>();
+  auto resultType = structType.getFieldType(fieldAttr);
+  build(builder, odsState, resultType, input, fieldAttr);
 }
 
 //===----------------------------------------------------------------------===//

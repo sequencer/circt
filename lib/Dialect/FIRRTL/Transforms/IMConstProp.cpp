@@ -240,7 +240,7 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
   /// Mark the given fieldRef as overdefined. This means that we cannot refine a
   /// specific constant for this fieldRef.
   void markOverdefined(FieldRef fieldRef) {
-    fieldRef = getFieldRefFromFieldRef(fieldRef);
+    fieldRef = getRoot(fieldRef);
     auto &entry = latticeValues[fieldRef];
     if (!entry.isOverdefined()) {
       entry.markOverdefined();
@@ -303,7 +303,7 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
     // Don't even do a map lookup if from has no info in it.
     if (source.isUnknown())
       return;
-    fieldRef = getFieldRefFromFieldRef(fieldRef);
+    fieldRef = getRoot(fieldRef);
 
     LLVM_DEBUG({
       llvm::dbgs() << "Lattice Merge Values: " << fieldRef << " ";
@@ -342,7 +342,7 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
     if (source.isUnknown())
       return;
 
-    fieldRef = getFieldRefFromFieldRef(fieldRef);
+    fieldRef = getRoot(fieldRef);
     if (!source.isOverdefined() && hasDontTouch(fieldRef))
       source = LatticeValue::getOverdefined();
     // If we've changed this value then revisit all the users.
@@ -378,21 +378,15 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
   void visitSubelementAccess(Operation *op);
   void visitOperation(Operation *op, FieldRef changedValue);
 
-  FieldRef getFieldRefFromValue(Value value) const {
-    // TODO: Consider to cache the result because getFieldRefFromValue is
-    // calulating roots iteratively.
-    return firrtl::getFieldRefFromValue(value);
-  }
-
-  /// Return the root value for the specified value.
-  FieldRef getFieldRefFromFieldRef(FieldRef fieldRef) const {
+  /// Return the root field ref for the given field ref.
+  FieldRef getRoot(FieldRef fieldRef) const {
     auto rootFieldRef = firrtl::getFieldRefFromValue(fieldRef.getValue());
     return rootFieldRef.getSubField(fieldRef.getFieldID());
   }
 
   DenseMap<FieldRef, LatticeValue>::const_iterator
   translateAndFind(FieldRef fieldRef) const {
-    return latticeValues.find(getFieldRefFromFieldRef(fieldRef));
+    return latticeValues.find(getRoot(fieldRef));
   }
 
   DenseMap<FieldRef, LatticeValue>::const_iterator
@@ -405,7 +399,7 @@ struct IMConstPropPass : public IMConstPropBase<IMConstPropPass> {
   /// root value in the range [index, index + size).
   std::tuple<Value, unsigned, unsigned>
   getRootValueWithCorrespondingLeafIDRange(FieldRef fieldRef) const {
-    auto rootFieldRef = getFieldRefFromFieldRef(fieldRef);
+    auto rootFieldRef = getRoot(fieldRef);
     auto leafID = fieldRefToLeafID(rootFieldRef);
 
     return {rootFieldRef.getValue(), leafID,

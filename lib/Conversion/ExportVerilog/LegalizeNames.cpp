@@ -57,16 +57,19 @@ StringAttr FieldNameResolver::getRenamedFieldName(StringAttr fieldName) {
     return it->second;
 
   // If a field name is not verilog name or used already, we have to rename it.
+  /*
   bool hasToBeRenamed = !sv::isNameValid(fieldName.getValue()) ||
                         usedFieldNames.count(fieldName.getValue());
-
+  */
+  Twine newFieldName = "field_" +llvm::Twine(fieldName.getValue());
+ /*
   if (!hasToBeRenamed) {
     setRenamedFieldName(fieldName, fieldName);
     return fieldName;
-  }
+  }*/
 
-  StringRef newFieldName = sv::legalizeName(
-      fieldName.getValue(), usedFieldNames, nextGeneratedNameID);
+  // StringRef newFieldName = sv::legalizeName(
+  //     fieldName.getValue(), usedFieldNames, nextGeneratedNameID);
 
   auto newFieldNameAttr = StringAttr::get(fieldName.getContext(), newFieldName);
 

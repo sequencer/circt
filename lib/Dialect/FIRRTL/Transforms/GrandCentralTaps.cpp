@@ -99,6 +99,7 @@ struct PortWiring {
   ArrayRef<InstancePath> prefices;
   /// The operation or module port being wire to this data tap module port.
   Target target;
+  unsigned targetFieldID;
   /// An additional string suffix to append to the hierarchical name.
   SmallString<16> suffix;
   /// If set, the port should output a constant literal.
@@ -575,17 +576,51 @@ void GrandCentralTapsPass::runOnOperation() {
           ("{{" + Twine(id) + "}}").toVector(hname);
         };
 
+        auto create_path = [&](FIRRTLType tpe) {
+          auto fieldID = port.targetFieldID;
+          while (fieldID) {
+            TypeSwitch<FIRRTLType>(tpe)
+                .template Case<FVectorType>([&](FVectorType vector) {
+                  unsigned index = vector.getIndexForFieldID(fieldID);
+                  tpe = vector.getSubTypeByFieldID(fieldID);
+                  fieldID -= vector.getFieldID(index);
+                  hname.append("[" + std::to_string(index) + "]");
+                })
+                .template Case<BundleType>([&](BundleType bundle) {
+                  unsigned index = bundle.getIndexForFieldID(fieldID);
+                  tpe = bundle.getSubTypeByFieldID(fieldID);
+                  fieldID -= bundle.getFieldID(index);
+                  // FIXME: Invalid verilog names (e.g. "begin", "reg", .. )
+                  // will be renamed at ExportVerilog so the path constructed
+                  // here might become invalid. We can use an inner name ref to
+                  // encode a reference to a subfield.
+                  hname.append(
+                      ".field_" +
+                      std::string(bundle.getElement(index).name.getValue()));
+                })
+                .Default([&](auto op) {
+                  llvm_unreachable(
+                      "fieldID > maxFieldID case must be already handled");
+                });
+          }
+        };
+
         // Concatenate the prefix into a proper full hierarchical name.
         addSymbol(
             FlatSymbolRefAttr::get(SymbolTable::getSymbolName(rootModule)));
         for (auto inst : shortestPrefix.getValue())
           addSymbol(getInnerRefTo(inst));
         if (port.target.getOp()) {
-          if (port.target.hasPort())
+          if (port.target.hasPort()) {
             addSymbol(
                 getInnerRefTo(port.target.getOp(), port.target.getPort()));
-          else
+            create_path(cast<FModuleLike>(port.target.getOp())
+                            .getPortType(port.target.getPort()));
+          } else {
             addSymbol(getInnerRefTo(port.target.getOp()));
+            create_path(
+                port.target.getOp()->getResult(0).getType().cast<FIRRTLType>());
+          }
         }
         if (!port.suffix.empty()) {
           hname += '.';
@@ -672,6 +707,8 @@ void GrandCentralTapsPass::processAnnotation(AnnotatedPort &portAnno,
   auto targetAnno =
       targetAnnoIt != annos.end() ? targetAnnoIt->second : portAnno.anno;
 
+  wiring.targetFieldID = targetAnno.getFieldID();
+
   // Handle data taps on signals and ports.
   if (targetAnno.isClass(referenceKeyClass)) {
     // Handle ports.
@@ -712,6 +749,7 @@ void GrandCentralTapsPass::processAnnotation(AnnotatedPort &portAnno,
     return;
   }
 
+  assert(targetAnno.getFieldID() == 0);
   // Handle data taps on black boxes.
   if (targetAnno.isClass(internalKeyClass)) {
     auto op = tappedOps.lookup(key);

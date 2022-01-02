@@ -198,8 +198,15 @@ bool AnnotationSet::hasAnnotationImpl(StringRef className) const {
   return getAnnotationImpl(className) != Annotation();
 }
 
-bool AnnotationSet::hasDontTouch() const {
-  return hasAnnotation(dontTouchAnnoClass);
+bool AnnotationSet::hasDontTouch(unsigned fieldID) const {
+  if (!hasAnnotation(dontTouchAnnoClass))
+    return false;
+  if (fieldID == 0)
+    return true;
+
+  // FIXME: We need to check the fieldID of dontTouchAnnotation is a parent of
+  // `fieldID` here. Currently, we handle it conservatively.
+  return true;
 }
 
 bool AnnotationSet::setDontTouch(bool dontTouch) {
@@ -222,8 +229,8 @@ bool AnnotationSet::removeDontTouch() {
   return removeAnnotation(dontTouchAnnoClass);
 }
 
-bool AnnotationSet::hasDontTouch(Operation *op) {
-  return AnnotationSet(op).hasDontTouch();
+bool AnnotationSet::hasDontTouch(Operation *op, unsigned fieldID) {
+  return AnnotationSet(op).hasDontTouch(fieldID);
 }
 
 bool AnnotationSet::setDontTouch(Operation *op, bool dontTouch) {

@@ -542,3 +542,270 @@ firrtl.circuit "dntOutput" {
     firrtl.connect %b, %const : !firrtl.uint<3>, !firrtl.uint<3>
   }
 }
+
+// -----
+
+firrtl.circuit "VectorPropagation1" {
+  // CHECK-LABEL: @VectorPropagation1
+  firrtl.module @VectorPropagation1(in %clock: !firrtl.clock, out %b: !firrtl.uint<1>) {
+    %c1_ui1 = firrtl.constant 1 : !firrtl.uint<1>
+    %tmp = firrtl.reg %clock  : !firrtl.vector<uint<1>, 2>
+    %0 = firrtl.subindex %tmp[0] : !firrtl.vector<uint<1>, 2>
+    firrtl.connect %0, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+    %1 = firrtl.subindex %tmp[1] : !firrtl.vector<uint<1>, 2>
+    firrtl.connect %1, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+    %2 = firrtl.xor %0, %1 : (!firrtl.uint<1>, !firrtl.uint<1>) -> !firrtl.uint<1>
+    firrtl.connect %b, %2 : !firrtl.uint<1>, !firrtl.uint<1>
+    // TODO: Register and connections are not currently erased.
+    // CHECK: %tmp = firrtl.reg %clock
+
+    // CHECK:      %[[c0_ui1:.+]] = firrtl.constant 0 : !firrtl.uint<1>
+    // CHECK-NEXT: firrtl.connect %b, %[[c0_ui1]] : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+}
+
+// -----
+
+firrtl.circuit "VectorPropagation2" {
+  // CHECK-LABEL: @VectorPropagation2
+  firrtl.module @VectorPropagation2(in %clock: !firrtl.clock, out %b1: !firrtl.uint<6>, out %b2: !firrtl.uint<6>, out %b3: !firrtl.uint<6>) {
+
+    // tmp1[0][0] <= 1
+    // tmp1[0][1] <= 2
+    // tmp1[1][0] <= 4
+    // tmp1[1][1] <= 8
+    // tmp1[2][0] <= 16
+    // tmp1[2][1] <= 32
+
+    // b1 <= tmp[0][0] xor tmp1[1][0] = 5
+    // b2 <= tmp[2][1] xor tmp1[0][1] = 34
+    // b3 <= tmp[1][1] xor tmp1[2][0] = 24
+
+    %c32_ui6 = firrtl.constant 32 : !firrtl.uint<6>
+    %c16_ui6 = firrtl.constant 16 : !firrtl.uint<6>
+    %c8_ui6 = firrtl.constant 8 : !firrtl.uint<6>
+    %c4_ui6 = firrtl.constant 4 : !firrtl.uint<6>
+    %c2_ui6 = firrtl.constant 2 : !firrtl.uint<6>
+    %c1_ui6 = firrtl.constant 1 : !firrtl.uint<6>
+    %tmp = firrtl.reg %clock  : !firrtl.vector<vector<uint<6>, 2>, 3>
+    %0 = firrtl.subindex %tmp[0] : !firrtl.vector<vector<uint<6>, 2>, 3>
+    %1 = firrtl.subindex %0[0] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %1, %c1_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %2 = firrtl.subindex %0[1] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %2, %c2_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %3 = firrtl.subindex %tmp[1] : !firrtl.vector<vector<uint<6>, 2>, 3>
+    %4 = firrtl.subindex %3[0] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %4, %c4_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %5 = firrtl.subindex %3[1] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %5, %c8_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %6 = firrtl.subindex %tmp[2] : !firrtl.vector<vector<uint<6>, 2>, 3>
+    %7 = firrtl.subindex %6[0] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %7, %c16_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %8 = firrtl.subindex %6[1] : !firrtl.vector<uint<6>, 2>
+    firrtl.connect %8, %c32_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    %9 = firrtl.xor %1, %4 : (!firrtl.uint<6>, !firrtl.uint<6>) -> !firrtl.uint<6>
+    firrtl.connect %b1, %9 : !firrtl.uint<6>, !firrtl.uint<6>
+    %10 = firrtl.xor %8, %2 : (!firrtl.uint<6>, !firrtl.uint<6>) -> !firrtl.uint<6>
+    firrtl.connect %b2, %10 : !firrtl.uint<6>, !firrtl.uint<6>
+    %11 = firrtl.xor %7, %5 : (!firrtl.uint<6>, !firrtl.uint<6>) -> !firrtl.uint<6>
+    firrtl.connect %b3, %11 : !firrtl.uint<6>, !firrtl.uint<6>
+    // TODO: Register and connections are not currently erased.
+    // CHECK: %tmp = firrtl.reg %clock
+
+    // CHECK:      %c5_ui6 = firrtl.constant 5 : !firrtl.uint<6>
+    // CHECK-NEXT: firrtl.connect %b1, %c5_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    // CHECK-NEXT: %c34_ui6 = firrtl.constant 34 : !firrtl.uint<6>
+    // CHECK-NEXT: firrtl.connect %b2, %c34_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+    // CHECK-NEXT: %c24_ui6 = firrtl.constant 24 : !firrtl.uint<6>
+    // CHECK-NEXT: firrtl.connect %b3, %c24_ui6 : !firrtl.uint<6>, !firrtl.uint<6>
+  }
+}
+
+// -----
+
+firrtl.circuit "BundlePropagation1"   {
+  // CHECK-LABEL: @BundlePropagation1
+  firrtl.module @BundlePropagation1(in %clock: !firrtl.clock, out %result: !firrtl.uint<3>) {
+    %tmp = firrtl.reg %clock  : !firrtl.bundle<a: uint<3>, b: uint<3>, c: uint<3>>
+    %c1_ui3 = firrtl.constant 1 : !firrtl.uint<3>
+    %c2_ui3 = firrtl.constant 2 : !firrtl.uint<3>
+    %c4_ui3 = firrtl.constant 4 : !firrtl.uint<3>
+    %0 = firrtl.subfield %tmp(0) : (!firrtl.bundle<a: uint<3>, b: uint<3>, c: uint<3>>) -> !firrtl.uint<3>
+    %1 = firrtl.subfield %tmp(1) : (!firrtl.bundle<a: uint<3>, b: uint<3>, c: uint<3>>) -> !firrtl.uint<3>
+    %2 = firrtl.subfield %tmp(2) : (!firrtl.bundle<a: uint<3>, b: uint<3>, c: uint<3>>) -> !firrtl.uint<3>
+    firrtl.connect %0, %c1_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %1, %c2_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %2, %c4_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    %3 = firrtl.xor %0, %1 : (!firrtl.uint<3>, !firrtl.uint<3>) -> !firrtl.uint<3>
+    %4 = firrtl.xor %3, %2 : (!firrtl.uint<3>, !firrtl.uint<3>) -> !firrtl.uint<3>
+    firrtl.connect %result, %4 : !firrtl.uint<3>, !firrtl.uint<3>
+    // TODO: Register and connections are not currently erased.
+    // CHECK: %tmp = firrtl.reg %clock
+
+    // CHECK:      %c7_ui3 = firrtl.constant 7 : !firrtl.uint<3>
+    // CHECK-NEXT: firrtl.connect %result, %c7_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+  }
+}
+
+// -----
+
+firrtl.circuit "VectorOfBundlePropagation"   {
+  // CHECK-LABEL: @VectorOfBundlePropagation
+  firrtl.module @VectorOfBundlePropagation(in %clock: !firrtl.clock, out %res1: !firrtl.uint<3>, out %res2: !firrtl.uint<3>) {
+    %bundle_vec = firrtl.reg %clock  : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+    %invalid = firrtl.invalidvalue : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+    firrtl.connect %bundle_vec, %invalid : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>, !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+    %0 = firrtl.subindex %bundle_vec[0] : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+
+    // bundle_vec[0].a <= 4
+    // bundle_vec[0].b <= 5
+    %c4_ui3 = firrtl.constant 4 : !firrtl.uint<3>
+    %c5_ui3 = firrtl.constant 5 : !firrtl.uint<3>
+    %1 = firrtl.subfield %0(0) : (!firrtl.bundle<a: uint<3>, b: uint<3>>) -> !firrtl.uint<3>
+    %2 = firrtl.subfield %0(1) : (!firrtl.bundle<a: uint<3>, b: uint<3>>) -> !firrtl.uint<3>
+    firrtl.connect %1, %c4_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %2, %c5_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+
+    // bundle_vec[2] <= bundle_vec[0]
+    %3 = firrtl.subindex %bundle_vec[2] : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+    firrtl.connect %3, %0 : !firrtl.bundle<a: uint<3>, b: uint<3>>, !firrtl.bundle<a: uint<3>, b: uint<3>>
+
+    // res1 <= bundle_vec[2].a = 4
+    // res2 <= bundle_vec[2].b = 5
+    %4 = firrtl.subfield %3(0) : (!firrtl.bundle<a: uint<3>, b: uint<3>>) -> !firrtl.uint<3>
+    %5 = firrtl.subfield %3(1) : (!firrtl.bundle<a: uint<3>, b: uint<3>>) -> !firrtl.uint<3>
+    firrtl.connect %res1, %4 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %res2, %5 : !firrtl.uint<3>, !firrtl.uint<3>
+
+    // TODO: Register and connections are not currently erased.
+    // CHECK: %bundle_vec = firrtl.reg %clock
+    // CHECK: firrtl.subindex %bundle_vec[0] : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+    // CHECK: firrtl.subindex %bundle_vec[2] : !firrtl.vector<bundle<a: uint<3>, b: uint<3>>, 3>
+
+    // Check that results are constant folded.
+    // CHECK:      %[[c4_ui3:.+]] = firrtl.constant 4 : !firrtl.uint<3>
+    // CHECK:      %[[c5_ui3:.+]] = firrtl.constant 5 : !firrtl.uint<3>
+
+    // CHECK:      firrtl.connect %res1, %[[c4_ui3]] : !firrtl.uint<3>, !firrtl.uint<3>
+    // CHECK-NEXT: firrtl.connect %res2, %[[c5_ui3]] : !firrtl.uint<3>, !firrtl.uint<3>
+  }
+}
+
+// -----
+
+// circuit AggregateAsyncReset:
+//   module AggregateAsyncReset:
+//     input clock : Clock
+//     input reset : UInt<1>
+//     output res1: UInt<3>
+//     output res2: UInt<3>
+//
+//     wire init : UInt<3>[2]
+//     reg reg : UInt<3>[2] , clock with : ( reset => ( reset , init ) )
+//     init[0] <= UInt<3>(0)
+//     init[1] <= UInt<3>(2)
+//     reg[0] <= UInt<3>(1)
+//     reg[1] <= UInt<3>(2)
+//     res1 <= reg[0]
+//     res2 <= reg[1]
+
+firrtl.circuit "AggregateAsyncReset" {
+  // CHECK-LABEL: @AggregateAsyncReset
+  firrtl.module @AggregateAsyncReset(in %clock: !firrtl.clock, in %reset: !firrtl.asyncreset, out %res1: !firrtl.uint<3>, out %res2: !firrtl.uint<3>) {
+    %c0_ui3 = firrtl.constant 0 : !firrtl.uint<3>
+    %c2_ui3 = firrtl.constant 2 : !firrtl.uint<3>
+    %c1_ui3 = firrtl.constant 1 : !firrtl.uint<3>
+    %init = firrtl.wire  : !firrtl.vector<uint<3>, 2>
+    %reg = firrtl.regreset %clock, %reset, %init  : !firrtl.asyncreset, !firrtl.vector<uint<3>, 2>, !firrtl.vector<uint<3>, 2>
+    %0 = firrtl.subindex %init[0] : !firrtl.vector<uint<3>, 2>
+    firrtl.connect %0, %c0_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    %1 = firrtl.subindex %init[1] : !firrtl.vector<uint<3>, 2>
+    firrtl.connect %1, %c2_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    %2 = firrtl.subindex %reg[0] : !firrtl.vector<uint<3>, 2>
+    firrtl.connect %2, %c1_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    %3 = firrtl.subindex %reg[1] : !firrtl.vector<uint<3>, 2>
+    firrtl.connect %3, %c2_ui3 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %res1, %2 : !firrtl.uint<3>, !firrtl.uint<3>
+    firrtl.connect %res2, %3 : !firrtl.uint<3>, !firrtl.uint<3>
+    // Check that %init is not deleted.
+    // CHECK: %init = firrtl.wire
+
+    // Check that %res1 is not folded because reg[0] is either 0 or 1.
+    // CHECK:      firrtl.connect %res1, %2 : !firrtl.uint<3>, !firrtl.uint<3>
+    // CHECK-NEXT: firrtl.connect %res2, %c2_ui3_2 : !firrtl.uint<3>, !firrtl.uint<3>
+  }
+}
+
+// -----
+
+firrtl.circuit "AggregateRegReset" {
+  // CHECK-LABEL: @AggregateRegReset
+  firrtl.module @AggregateRegReset(in %clock: !firrtl.clock, in %reset: !firrtl.uint<1>, out %out: !firrtl.uint<1>) {
+    %init = firrtl.wire : !firrtl.vector<uint<1>, 1>
+    %0 = firrtl.subindex %init[0] : !firrtl.vector<uint<1>, 1>
+    %true = firrtl.constant 1 : !firrtl.uint<1>
+    firrtl.connect %0, %true : !firrtl.uint<1>, !firrtl.uint<1>
+    %reg = firrtl.regreset %clock, %reset, %init  : !firrtl.uint<1>, !firrtl.vector<uint<1>, 1>, !firrtl.vector<uint<1>, 1>
+    %1 = firrtl.subindex %reg[0] : !firrtl.vector<uint<1>, 1>
+    firrtl.connect %1, %true : !firrtl.uint<1>, !firrtl.uint<1>
+    firrtl.connect %out, %1 : !firrtl.uint<1>, !firrtl.uint<1>
+    // Check that %init is not deleted.
+    // CHECK: %init = firrtl.wire
+    // CHECK: firrtl.connect %out, %[[c1:c1_ui1.*]] : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+}
+
+// -----
+
+firrtl.circuit "DontTouchAggregate" {
+  firrtl.module @DontTouchAggregate(in %clock: !firrtl.clock, out %out1: !firrtl.uint<1>, out %out2: !firrtl.uint<1>) {
+    // fieldID 1 means the first element. Check that we don't propagate througth it.
+    %init = firrtl.wire {annotations = [#firrtl.subAnno<fieldID = 1, {class = "firrtl.transforms.DontTouchAnnotation"}>]}
+                        : !firrtl.vector<uint<1>, 2>
+    %0 = firrtl.subindex %init[0] : !firrtl.vector<uint<1>, 2>
+    %1 = firrtl.subindex %init[1] : !firrtl.vector<uint<1>, 2>
+    %true = firrtl.constant 1 : !firrtl.uint<1>
+    firrtl.connect %0, %true : !firrtl.uint<1>, !firrtl.uint<1>
+    firrtl.connect %1, %true : !firrtl.uint<1>, !firrtl.uint<1>
+
+    firrtl.connect %out1, %0 : !firrtl.uint<1>, !firrtl.uint<1>
+    firrtl.connect %out2, %1 : !firrtl.uint<1>, !firrtl.uint<1>
+    // Make sure that we don't propagate through %init[0].
+    // FIXME: Currently, we are not propagating through %init[1] too because
+    // we don't look at DontTouchAnnotation in the field sensitive way.
+
+    // CHECK:      firrtl.connect %0, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+    // CHECK-NEXT: firrtl.connect %1, %c1_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+    // CHECK-NEXT: firrtl.connect %out1, %0 : !firrtl.uint<1>, !firrtl.uint<1>
+    // CHECK-NEXT: firrtl.connect %out2, %1 : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+}
+
+// -----
+
+firrtl.circuit "OutPortTop" {
+  // fieldID 1 means the first element. Check that we don't propagate througth it.
+  firrtl.module @OutPortChild(out %out: !firrtl.vector<uint<1>, 2> [#firrtl.subAnno<fieldID = 1, {class = "firrtl.transforms.DontTouchAnnotation"}>]) {
+    %c0_ui1 = firrtl.constant 0 : !firrtl.uint<1>
+    %0 = firrtl.subindex %out[0] : !firrtl.vector<uint<1>, 2>
+    %1 = firrtl.subindex %out[1] : !firrtl.vector<uint<1>, 2>
+    firrtl.connect %0, %c0_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+    firrtl.connect %1, %c0_ui1 : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+  // CHECK-LABEL: firrtl.module @OutPortTop
+  firrtl.module @OutPortTop(out %out1: !firrtl.uint<1>, out %out2: !firrtl.uint<1>) {
+    %c_out = firrtl.instance c @OutPortChild(out out: !firrtl.vector<uint<1>, 2>)
+    %0 = firrtl.subindex %c_out[0] : !firrtl.vector<uint<1>, 2>
+    %1 = firrtl.subindex %c_out[1] : !firrtl.vector<uint<1>, 2>
+    firrtl.connect %out1, %0 : !firrtl.uint<1>, !firrtl.uint<1>
+    firrtl.connect %out2, %1 : !firrtl.uint<1>, !firrtl.uint<1>
+    // Make sure that we don't propagate through %c_out[0].
+    // FIXME: Currently, we are not propagating through %c_out[1] too because
+    // we don't look at DontTouchAnnotation in the field sensitive way.
+
+    // CHECK:      %0 = firrtl.subindex %c_out[0] : !firrtl.vector<uint<1>, 2>
+    // CHECK-NEXT: %1 = firrtl.subindex %c_out[1] : !firrtl.vector<uint<1>, 2>
+    // CHECK-NEXT: firrtl.connect %out1, %0 : !firrtl.uint<1>, !firrtl.uint<1>
+    // CHECK-NEXT: firrtl.connect %out2, %1 : !firrtl.uint<1>, !firrtl.uint<1>
+  }
+}

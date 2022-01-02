@@ -92,7 +92,10 @@ bool hasDontTouch(Value value);
 
 /// Check whether an operation has a `DontTouch` annotation, or a symbol that
 /// should prevent certain types of canonicalizations.
-bool hasDontTouch(Operation *op);
+bool hasDontTouch(Operation *op, unsigned fieldID = 0);
+
+/// Check whether a fieldRef has a `DontTouch` annotation.
+bool hasDontTouch(FieldRef fieldRef);
 
 // Out-of-line implementation of various trait verification methods and
 // functions commonly used among operations.

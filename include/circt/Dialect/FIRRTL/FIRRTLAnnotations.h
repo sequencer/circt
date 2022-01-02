@@ -219,11 +219,11 @@ public:
   // Support for widely used annotations.
 
   /// firrtl.transforms.DontTouchAnnotation
-  bool hasDontTouch() const;
+  bool hasDontTouch(unsigned fieldID = 0) const;
   bool setDontTouch(bool dontTouch);
   bool addDontTouch();
   bool removeDontTouch();
-  static bool hasDontTouch(Operation *op);
+  static bool hasDontTouch(Operation *op, unsigned fieldID = 0);
   static bool setDontTouch(Operation *op, bool dontTouch);
   static bool addDontTouch(Operation *op);
   static bool removeDontTouch(Operation *op);

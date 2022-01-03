@@ -492,6 +492,9 @@ static bool isOkToBitSelectFrom(Value v) {
   return false;
 }
 
+/// Construct a access path which points at the element given by `fieldID`.
+/// TODO: This function should be removed once HW/SV dialects implement
+/// fieldID utilities like FIRRTL dialect.
 static bool constructAccessPathToFieldID(SmallString<16> &path, Type type,
                                          unsigned fieldID) {
   std::function<bool(Type)> constructPath = [&](Type type) {
@@ -515,8 +518,7 @@ static bool constructAccessPathToFieldID(SmallString<16> &path, Type type,
           path.push_back('[');
           for (auto idx : llvm::seq(0lu, arrayType.getSize())) {
             unsigned size = path.size();
-            path.append(std::to_string(idx));
-            path.push_back(']');
+            path.append(llvm::utostr(idx) + "]");
             fieldID--;
             if (constructPath(arrayType.getElementType()))
               return true;
@@ -832,7 +834,9 @@ void EmitterBase::emitTextWithSubstitutions(
               tpe = symOp.getOp()->getResult(0).getType();
             }
 
-            constructAccessPathToFieldID(path, tpe, fieldID);
+            if (!constructAccessPathToFieldID(path, tpe, fieldID))
+              emitError(op, "faield to create an access path to fieldID=")
+                  << fieldID << " for type " << tpe;
             symVerilogName = path;
           }
         }

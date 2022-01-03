@@ -191,6 +191,7 @@ Attribute InnerRefAttr::parse(AsmParser &p, Type type) {
   if (p.parseLess() || p.parseAttribute<SymbolRefAttr>(attr))
     return Attribute();
 
+  // Parse an optional fieldID.
   if (!p.parseOptionalColon())
     if (p.parseColon() || p.parseInteger(fieldID))
       return Attribute();
@@ -210,6 +211,7 @@ void InnerRefAttr::print(AsmPrinter &p) const {
   p.printSymbolName(getModule().getValue());
   p << "::";
   p.printSymbolName(getName().getValue());
+  // Print fieldID only when fieldID is non-zero.
   if (getFieldID())
     p << "::" << getFieldID();
   p << ">";

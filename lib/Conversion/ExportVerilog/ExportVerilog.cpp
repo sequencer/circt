@@ -492,6 +492,51 @@ static bool isOkToBitSelectFrom(Value v) {
   return false;
 }
 
+static bool constructAccessPathToFieldID(SmallString<16> &path, Type type,
+                                         unsigned fieldID) {
+  std::function<bool(Type)> constructPath = [&](Type type) {
+    if (fieldID == 0)
+      return true;
+    return TypeSwitch<Type, bool>(type)
+        .Case<hw::StructType>([&](hw::StructType structTy) {
+          path.push_back('.');
+          for (auto elem : structTy.getElements()) {
+            unsigned size = path.size();
+            // FIXME: Rename invalid verilog field names.
+            path.append(elem.name);
+            fieldID--;
+            if (constructPath(elem.type))
+              return true;
+            path.resize(size);
+          }
+          return false;
+        })
+        .Case<hw::ArrayType, hw::UnpackedArrayType>([&](auto arrayType) {
+          path.push_back('[');
+          for (auto idx : llvm::seq(0lu, arrayType.getSize())) {
+            unsigned size = path.size();
+            path.append(std::to_string(idx));
+            path.push_back(']');
+            fieldID--;
+            if (constructPath(arrayType.getElementType()))
+              return true;
+            path.resize(size);
+          }
+          return false;
+        })
+        .Case<hw::InOutType>([&](auto inout) {
+          // NOTE: Do not decrement fieldID.
+          return constructPath(inout.getElementType());
+        })
+        .Default([&](auto base) {
+          // Otherwise assume the type is a base type.
+          fieldID--;
+          return false;
+        });
+  };
+  return constructPath(type);
+}
+
 //===----------------------------------------------------------------------===//
 // ModuleNameManager Implementation
 //===----------------------------------------------------------------------===//
@@ -776,6 +821,20 @@ void EmitterBase::emitTextWithSubstitutions(
           auto symOp =
               state.symbolCache.getDefinition(isym.getModule(), isym.getName());
           symVerilogName = namify(sym, symOp);
+          if (auto fieldID = isym.getFieldID()) {
+            SmallString<16> path(symVerilogName);
+            Type tpe;
+            if (symOp.hasPort()) {
+              tpe = mlir::function_like_impl::getFunctionType(symOp.getOp())
+                        .getInput(symOp.getPort());
+            } else {
+              assert(symOp.getOp()->getNumResults() == 1);
+              tpe = symOp.getOp()->getResult(0).getType();
+            }
+
+            constructAccessPathToFieldID(path, tpe, fieldID);
+            symVerilogName = path;
+          }
         }
         os << symVerilogName;
       } else {

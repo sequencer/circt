@@ -520,9 +520,8 @@ void IMConstPropPass::runOnOperation() {
   }
 
   // Rewrite any constants in the modules.
-  mlir::parallelForEach(circuit.getContext(),
-                        circuit.getBody()->getOps<FModuleOp>(),
-                        [&](auto op) { rewriteModuleBody(op); });
+  llvm::for_each(circuit.getBody()->getOps<FModuleOp>(),
+                 [&](auto op) { rewriteModuleBody(op); });
 
   // Clean up our state for next time.
   instanceGraph = nullptr;
@@ -852,8 +851,8 @@ void IMConstPropPass::visitOperation(Operation *op, FieldRef changedValue) {
     return visitPartialConnect(partialConnectOp, changedValue);
   if (auto regResetOp = dyn_cast<RegResetOp>(op))
     return visitRegResetOp(regResetOp, changedValue);
-  if (isa<SubindexOp, SubfieldOp>(op))
-    return visitSubelementAccess(op);
+  // if (isa<SubindexOp, SubfieldOp>(op))
+  //   return visitSubelementAccess(op);
 
   // The clock operand of regop changing doesn't change its result value.
   if (isa<RegOp>(op))
@@ -862,14 +861,23 @@ void IMConstPropPass::visitOperation(Operation *op, FieldRef changedValue) {
 
   // If all of the results of this operation are already overdefined (or if
   // there are no results) then bail out early: we've converged.
+  bool encounter = false;
   auto isOverdefinedFn = [&](Value value) {
-    assert(value.getType().cast<FIRRTLType>().isGround() &&
-           "all operands must have ground types here");
+    if (!value.getType().cast<FIRRTLType>().isGround()) {
+      encounter = true;
+      return false;
+    }
     return isOverdefined(value);
   };
 
   if (llvm::all_of(op->getResults(), isOverdefinedFn))
     return;
+
+  if (encounter) {
+    for (auto value : op->getResults())
+      markOverdefined(value);
+    return;
+  }
 
   // Collect all of the constant operands feeding into this operation. If any
   // are not ready to be resolved, bail out and wait for them to resolve.
@@ -877,6 +885,13 @@ void IMConstPropPass::visitOperation(Operation *op, FieldRef changedValue) {
   operandConstants.reserve(op->getNumOperands());
   for (Value operand : op->getOperands()) {
     auto &operandLattice = latticeValues[getFieldRefFromValue(operand)];
+    auto foo = getFieldRefFromValue(operand);
+    if (foo.getFieldID() != 0 ||
+        !foo.getValue().getType().cast<FIRRTLType>().isGround()) {
+      for (auto value : op->getResults())
+        markOverdefined(value);
+      return;
+    }
 
     // If the operand is an unknown value, then we generally don't want to
     // process it - we want to wait until the value is resolved to by the SCCP
@@ -989,6 +1004,7 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
 
       if (auto *destOp = connect.dest().getDefiningOp()) {
         if (isDeletableWireOrReg(destOp) && !isOverdefined(connect.dest())) {
+          llvm::dbgs() << "DELETED CONNECT" << connect << "\n";
           connect.erase();
           ++numErasedOp;
         }
@@ -1004,6 +1020,8 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
     // If this operation is already dead, then go ahead and remove it.
     if (op.use_empty() &&
         (wouldOpBeTriviallyDead(&op) || isDeletableWireOrReg(&op))) {
+      ++numErasedOp;
+      llvm::dbgs() << "DELETED " << op << "\n";
       op.erase();
       continue;
     }
@@ -1014,7 +1032,7 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
 
     // If the op had any constants folded, replace them.
     builder.setInsertionPoint(&op);
-    bool foldedAny = false;
+    bool foldedAny = true;
     for (auto result : op.getResults())
       foldedAny |= replaceValueIfPossible(result);
 
@@ -1024,6 +1042,7 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
     // If the operation folded to a constant then we can probably nuke it.
     if (foldedAny && op.use_empty() &&
         (wouldOpBeTriviallyDead(&op) || isDeletableWireOrReg(&op))) {
+      llvm::dbgs() << "DELETED " << op << "\n";
       op.erase();
       ++numErasedOp;
       continue;

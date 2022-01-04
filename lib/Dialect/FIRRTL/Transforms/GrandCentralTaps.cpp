@@ -315,10 +315,11 @@ class GrandCentralTapsPass : public GrandCentralTapsBase<GrandCentralTapsPass> {
   StringAttr getOrAddInnerSym(FModuleLike module, size_t portIdx);
   /// Obtain an inner reference to an operation, possibly adding an `inner_sym`
   /// to that operation.
-  hw::InnerRefAttr getInnerRefTo(Operation *op);
+  hw::InnerRefAttr getInnerRefTo(Operation *op, unsigned fieldID = 0);
   /// Obtain an inner reference to a module port, possibly adding an `inner_sym`
   /// to that port.
-  hw::InnerRefAttr getInnerRefTo(FModuleLike module, size_t portIdx);
+  hw::InnerRefAttr getInnerRefTo(FModuleLike module, size_t portIdx,
+                                 unsigned fieldID = 0);
 
   /// Get the cached namespace for a module.
   ModuleNamespace &getModuleNamespace(FModuleLike module) {
@@ -576,35 +577,6 @@ void GrandCentralTapsPass::runOnOperation() {
           ("{{" + Twine(id) + "}}").toVector(hname);
         };
 
-        auto create_path = [&](FIRRTLType tpe) {
-          auto fieldID = port.targetFieldID;
-          while (fieldID) {
-            TypeSwitch<FIRRTLType>(tpe)
-                .template Case<FVectorType>([&](FVectorType vector) {
-                  unsigned index = vector.getIndexForFieldID(fieldID);
-                  tpe = vector.getSubTypeByFieldID(fieldID);
-                  fieldID -= vector.getFieldID(index);
-                  hname.append("[" + std::to_string(index) + "]");
-                })
-                .template Case<BundleType>([&](BundleType bundle) {
-                  unsigned index = bundle.getIndexForFieldID(fieldID);
-                  tpe = bundle.getSubTypeByFieldID(fieldID);
-                  fieldID -= bundle.getFieldID(index);
-                  // FIXME: Invalid verilog names (e.g. "begin", "reg", .. )
-                  // will be renamed at ExportVerilog so the path constructed
-                  // here might become invalid. We can use an inner name ref to
-                  // encode a reference to a subfield.
-                  hname.append(
-                      ".field_" +
-                      std::string(bundle.getElement(index).name.getValue()));
-                })
-                .Default([&](auto op) {
-                  llvm_unreachable(
-                      "fieldID > maxFieldID case must be already handled");
-                });
-          }
-        };
-
         // Concatenate the prefix into a proper full hierarchical name.
         addSymbol(
             FlatSymbolRefAttr::get(SymbolTable::getSymbolName(rootModule)));
@@ -612,14 +584,10 @@ void GrandCentralTapsPass::runOnOperation() {
           addSymbol(getInnerRefTo(inst));
         if (port.target.getOp()) {
           if (port.target.hasPort()) {
-            addSymbol(
-                getInnerRefTo(port.target.getOp(), port.target.getPort()));
-            create_path(cast<FModuleLike>(port.target.getOp())
-                            .getPortType(port.target.getPort()));
+            addSymbol(getInnerRefTo(port.target.getOp(), port.target.getPort(),
+                                    port.targetFieldID));
           } else {
-            addSymbol(getInnerRefTo(port.target.getOp()));
-            create_path(
-                port.target.getOp()->getResult(0).getType().cast<FIRRTLType>());
+            addSymbol(getInnerRefTo(port.target.getOp(), port.targetFieldID));
           }
         }
         if (!port.suffix.empty()) {
@@ -870,16 +838,18 @@ StringAttr GrandCentralTapsPass::getOrAddInnerSym(FModuleLike module,
   return attr;
 }
 
-hw::InnerRefAttr GrandCentralTapsPass::getInnerRefTo(Operation *op) {
+hw::InnerRefAttr GrandCentralTapsPass::getInnerRefTo(Operation *op,
+                                                     unsigned fieldID) {
   return hw::InnerRefAttr::get(
       SymbolTable::getSymbolName(op->getParentOfType<FModuleOp>()),
-      getOrAddInnerSym(op));
+      getOrAddInnerSym(op), fieldID);
 }
 
 hw::InnerRefAttr GrandCentralTapsPass::getInnerRefTo(FModuleLike module,
-                                                     size_t portIdx) {
+                                                     size_t portIdx,
+                                                     unsigned fieldID) {
   return hw::InnerRefAttr::get(SymbolTable::getSymbolName(module),
-                               getOrAddInnerSym(module, portIdx));
+                               getOrAddInnerSym(module, portIdx), fieldID);
 }
 
 std::unique_ptr<mlir::Pass> circt::firrtl::createGrandCentralTapsPass() {

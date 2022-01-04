@@ -1032,7 +1032,7 @@ void IMConstPropPass::rewriteModuleBody(FModuleOp module) {
 
     // If the op had any constants folded, replace them.
     builder.setInsertionPoint(&op);
-    bool foldedAny = true;
+    bool foldedAny = false;
     for (auto result : op.getResults())
       foldedAny |= replaceValueIfPossible(result);
 

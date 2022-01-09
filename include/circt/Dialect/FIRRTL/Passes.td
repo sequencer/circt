@@ -63,6 +63,17 @@ def IMConstProp : Pass<"firrtl-imconstprop", "firrtl::CircuitOp"> {
   ];
 }
 
+def RemoveUnusedPorts : Pass<"firrtl-remove-unused-ports", "firrtl::CircuitOp"> {
+  let summary = "Remove unused ports";
+  let description = [{
+    Remove unused ports if they don't have annotations or ports.
+  }];
+  let constructor = "circt::firrtl::createRemoveUnusedPortsPass()";
+  let statistics = [
+    Statistic<"numRemovedPorts", "num-removed-ports", "Number of ports erased">,
+  ];
+}
+
 def Inliner : Pass<"firrtl-inliner", "firrtl::CircuitOp"> {
   let summary = "Performs inlining, flattening, and dead module elimination";
   let description = [{
@@ -336,5 +347,6 @@ def RemoveResets : Pass<"firrtl-remove-resets", "firrtl::FModuleOp"> {
   let summary = "Remove module-scoped invalidated resets";
   let constructor = "circt::firrtl::createRemoveResetsPass()";
 }
+
 
 #endif // CIRCT_DIALECT_FIRRTL_PASSES_TD

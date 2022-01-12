@@ -226,3 +226,158 @@ sv.verbatim "hello"
 }
 
 }
+
+// Test NLA handling during inlining for situations involving NLAs where the NLA
+// begins at the main module.  There are four behaviors being tested:
+//
+//   1) @nla1: Targeting a module should be updated
+//   2) @nla2: Targeting a component should be updated
+//   3) @nla3: Targeting an inlined module should be dropped
+//   4) @nla4: NLAs should promote to local annotations
+//
+// CHECK-LABEL: firrtl.circuit "NLAInlining"
+firrtl.circuit "NLAInlining" {
+  // CHECK-NEXT: firrtl.nla @nla1 [#hw.innerNameRef<@NLAInlining::@bar>, @Bar]
+  // CHECK-NEXT: firrtl.nla @nla2 [#hw.innerNameRef<@NLAInlining::@bar>, #hw.innerNameRef<@Bar::@a>]
+  // CHECK-NOT:  firrtl.nla @nla3
+  // CHECK-NOT:  firrtl.nla @nla4
+  firrtl.nla @nla1 [#hw.innerNameRef<@NLAInlining::@foo>, #hw.innerNameRef<@Foo::@bar>, @Bar]
+  firrtl.nla @nla2 [#hw.innerNameRef<@NLAInlining::@foo>, #hw.innerNameRef<@Foo::@bar>, #hw.innerNameRef<@Bar::@a>]
+  firrtl.nla @nla3 [#hw.innerNameRef<@NLAInlining::@foo>, @Foo]
+  firrtl.nla @nla4 [#hw.innerNameRef<@NLAInlining::@foo>, #hw.innerNameRef<@Foo::@b>]
+  // CHECK-NEXT: firrtl.module @Bar() {{.+}} [{circt.nonlocal = @nla1, class = "nla1"}]
+  firrtl.module @Bar() attributes {annotations = [{circt.nonlocal = @nla1, class = "nla1"}]} {
+    %a = firrtl.wire sym @a {annotations = [{circt.nonlocal = @nla2, class = "nla2"}]} : !firrtl.uint<1>
+  }
+  firrtl.module @Foo() attributes {annotations = [
+  {class = "firrtl.passes.InlineAnnotation"}, {circt.nonlocal = @nla3, class = "nla3"}]} {
+    firrtl.instance bar sym @bar {annotations = [
+      {circt.nonlocal = @nla1, class = "circt.nonlocal"},
+      {circt.nonlocal = @nla2, class = "circt.nonlocal"}]} @Bar()
+    %b = firrtl.wire sym @b {annotations = [{circt.nonlocal = @nla4, class = "nla4"}]} : !firrtl.uint<1>
+  }
+  // CHECK: firrtl.module @NLAInlining
+  firrtl.module @NLAInlining() {
+    firrtl.instance foo sym @foo {annotations = [{circt.nonlocal = @nla1, class = "circt.nonlocal"}, {circt.nonlocal = @nla2, class = "circt.nonlocal"}, {circt.nonlocal = @nla3, class = "circt.nonlocal"}, {circt.nonlocal = @nla4, class = "circt.nonlocal"}]} @Foo()
+    // CHECK-NEXT: firrtl.instance foo_bar {{.+}} [{circt.nonlocal = @nla1, class = "circt.nonlocal"}, {circt.nonlocal = @nla2, class = "circt.nonlocal"}]
+    // CHECK-NEXT: firrtl.wire {{.+}} [{class = "nla4"}]
+  }
+}
+
+// Test NLA handling during inlining for situations where the NLA does NOT start
+// at the root.  This checks that the NLA is properly copied for each new
+// instantiation.
+//
+// CHECK-LABEL: firrtl.circuit "NLAInliningNotMainRoot"
+firrtl.circuit "NLAInliningNotMainRoot" {
+  // CHECK-NEXT: firrtl.nla @nla1 [#hw.innerNameRef<@NLAInliningNotMainRoot::@baz>, #hw.innerNameRef<@Baz::@a>]
+  // CHECK-NEXT: firrtl.nla @nla1_0 [#hw.innerNameRef<@Foo::@baz>, #hw.innerNameRef<@Baz::@a>]
+  firrtl.nla @nla1 [#hw.innerNameRef<@Bar::@baz>, #hw.innerNameRef<@Baz::@a>]
+  // CHECK: firrtl.module @Baz
+  firrtl.module @Baz() {
+    // CHECK-NEXT: firrtl.wire {{.+}} [{circt.nonlocal = @nla1, class = "hello"}, {circt.nonlocal = @nla1_0, class = "hello"}]
+    %a = firrtl.wire sym @a {annotations = [{circt.nonlocal = @nla1, class = "hello"}]} : !firrtl.uint<1>
+  }
+  firrtl.module @Bar() attributes {annotations = [{class = "firrtl.passes.InlineAnnotation"}]} {
+    firrtl.instance baz sym @baz {annotations = [{circt.nonlocal = @nla1, class = "circt.nonlocal"}]} @Baz()
+  }
+  // CHECK: firrtl.module @Foo
+  firrtl.module @Foo() {
+    // CHECK-NEXT: firrtl.instance bar_baz {{.+}} [{circt.nonlocal = @nla1_0, class = "circt.nonlocal"}]
+    firrtl.instance bar @Bar()
+  }
+  // CHECK: firrtl.module @NLAInliningNotMainRoot
+  firrtl.module @NLAInliningNotMainRoot() {
+    firrtl.instance foo @Foo()
+    // CHECK: firrtl.instance bar_baz {{.+}} [{circt.nonlocal = @nla1, class = "circt.nonlocal"}]
+    firrtl.instance bar @Bar()
+    firrtl.instance baz @Baz()
+  }
+}
+
+// Test NLA handling during flattening for situations where the root of an NLA
+// is the flattened module or an ancestor of the flattened module.  This is
+// testing the following conditions:
+//
+//   1) @nla1: Targeting a reference should be updated.
+//   2) @nla2: Targeting a module should be dropped.
+//   3) @nla3: Targeting a reference should be promoted to local.
+//
+// CHECK-LABEL: firrtl.circuit "NLAFlattening"
+firrtl.circuit "NLAFlattening" {
+  // CHECK-NEXT: firrtl.nla @nla1 [#hw.innerNameRef<@NLAFlattening::@foo>, #hw.innerNameRef<@Foo::@a>]
+  // CHECK-NOT:  firrtl.nla @nla2
+  // CHECK-NOT:  firrtl.nla @nla3
+  firrtl.nla @nla1 [#hw.innerNameRef<@NLAFlattening::@foo>, #hw.innerNameRef<@Foo::@bar>, #hw.innerNameRef<@Bar::@baz>, #hw.innerNameRef<@Baz::@a>]
+  firrtl.nla @nla2 [#hw.innerNameRef<@NLAFlattening::@foo>, #hw.innerNameRef<@Foo::@bar>, #hw.innerNameRef<@Bar::@baz>, @Baz]
+  firrtl.nla @nla3 [#hw.innerNameRef<@Foo::@bar>, #hw.innerNameRef<@Bar::@b>]
+  firrtl.module @Baz() attributes {annotations = [{circt.nonlocal = @nla2, class = "nla2"}]} {
+    %a = firrtl.wire sym @a {annotations = [{circt.nonlocal = @nla1, class = "nla1"}]} : !firrtl.uint<1>
+  }
+  firrtl.module @Bar() {
+    firrtl.instance baz sym @baz {annotations = [
+      {circt.nonlocal = @nla1, class = "circt.nonlocal"},
+      {circt.nonlocal = @nla2, class = "circt.nonlocal"}
+    ]} @Baz()
+    %b = firrtl.wire sym @b {annotations = [{circt.nonlocal = @nla3, class = "nla3"}]} : !firrtl.uint<1>
+  }
+  // CHECK: firrtl.module @Foo
+  firrtl.module @Foo() attributes {annotations = [{class = "firrtl.transforms.FlattenAnnotation"}]} {
+    firrtl.instance bar sym @bar {annotations = [
+      {circt.nonlocal = @nla1, class = "circt.nonlocal"},
+      {circt.nonlocal = @nla2, class = "circt.nonlocal"},
+      {circt.nonlocal = @nla3, class = "circt.nonlocal"}
+    ]} @Bar()
+    // CHECK-NEXT: %bar_baz_a = firrtl.wire {{.+}} [{circt.nonlocal = @nla1, class = "nla1"}]
+    // CHECK-NEXT: %bar_b = firrtl.wire {{.+}} [{class = "nla3"}]
+  }
+  // CHECK: firrtl.module @NLAFlattening
+  firrtl.module @NLAFlattening() {
+    // CHECK-NEXT: firrtl.instance foo {{.+}} [{circt.nonlocal = @nla1, class = "circt.nonlocal"}]
+    firrtl.instance foo sym @foo {annotations = [
+      {circt.nonlocal = @nla1, class = "circt.nonlocal"},
+      {circt.nonlocal = @nla2, class = "circt.nonlocal"}
+    ]} @Foo()
+  }
+}
+
+// Test NLA handling during flattening for situations where the NLA root is a
+// child of the flattened module.  This is testing the following situations:
+//
+//   1) @nla1: NLA is made local and garbage collected.
+//   2) @nla2: NLA is made local, but not garbage collected.
+//
+// CHECK-LABEL: firrtl.circuit "NLAFlatteningChildRoot"
+firrtl.circuit "NLAFlatteningChildRoot" {
+  // CHECK-NOT:  firrtl.nla @nla1
+  // CHECK-NEXT: firrtl.nla @nla2 [#hw.innerNameRef<@Baz::@quz>, #hw.innerNameRef<@Quz::@b>]
+  firrtl.nla @nla1 [#hw.innerNameRef<@Bar::@qux>, #hw.innerNameRef<@Qux::@a>]
+  firrtl.nla @nla2 [#hw.innerNameRef<@Baz::@quz>, #hw.innerNameRef<@Quz::@b>]
+  // CHECK: firrtl.module @Quz
+  firrtl.module @Quz() {
+    // CHECK-NEXT: firrtl.wire {{.+}} [{circt.nonlocal = @nla2, class = "nla2"}]
+    %b = firrtl.wire sym @b {annotations = [{circt.nonlocal = @nla2, class = "nla2"}]} : !firrtl.uint<1>
+  }
+  firrtl.module @Qux() {
+    %a = firrtl.wire sym @a {annotations = [{circt.nonlocal = @nla1, class = "nla1"}]} : !firrtl.uint<1>
+  }
+  // CHECK: firrtl.module @Baz
+  firrtl.module @Baz() {
+    // CHECK-NEXT: firrtl.instance {{.+}} [{circt.nonlocal = @nla2, class = "circt.nonlocal"}]
+    firrtl.instance quz sym @quz {annotations = [{circt.nonlocal = @nla2, class = "circt.nonlocal"}]} @Quz()
+  }
+  firrtl.module @Bar() {
+    firrtl.instance qux sym @qux {annotations = [{circt.nonlocal = @nla1, class = "circt.nonlocal"}]} @Qux()
+  }
+  // CHECK: firrtl.module @Foo
+  firrtl.module @Foo() attributes {annotations = [{class = "firrtl.transforms.FlattenAnnotation"}]} {
+    // CHECK-NEXT: %bar_qux_a = firrtl.wire {{.+}} [{class = "nla1"}]
+    // CHECK-NEXT: %baz_quz_b = firrtl.wire {{.+}} [{class = "nla2"}]
+    firrtl.instance bar @Bar()
+    firrtl.instance baz @Baz()
+  }
+  firrtl.module @NLAFlatteningChildRoot() {
+    firrtl.instance foo @Foo()
+    firrtl.instance baz @Baz()
+  }
+}

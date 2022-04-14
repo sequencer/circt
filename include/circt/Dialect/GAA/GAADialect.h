@@ -13,9 +13,5 @@
 #include "mlir/IR/Dialect.h"
 
 #include "circt/Dialect/GAA/GAADialect.h.inc"
-namespace circt {
-namespace gaa {
 
-} // namespace gaa
-} // namespace circt
 #endif // CIRCT_DIALECT_GAA_GAADIALECT_H

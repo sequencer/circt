@@ -24,7 +24,10 @@ include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 // HWIntegerType
 include "circt/Dialect/HW/HWTypes.td"
+// HWModuleLike
+include "circt/Dialect/HW/HWOpInterfaces.td"
 
+include "GAAOpInterfaces.td"
 include "GAADialect.td"
 include "GAAAttributes.td"
 include "GAATypes.td"

@@ -15,12 +15,13 @@
 
 include "mlir/Pass/PassBase.td"
 
-def Analysis : Pass<"gaa-analysis", "gaa::CircuitOp"> {
-  let summary = "analysis GAA Module, analyse method calling stacks";
+def GenerateConflictMatrix : Pass<"gaa-analysis", "gaa::CircuitOp"> {
+  let summary = "generate the conflict matrix for scheduling.";
   let description = [{
-    This pass analyse the call stack of the GAA Circuit.
+    This pass use CallGraph to generate the native call stack store conflict
+    matrix to CircuitOp, scheduling pragma will be gather as well.
   }];
-  let constructor = "circt::gaa::createAnalysisPass()";
+  let constructor = "circt::gaa::createGenerateConflictMatrix()";
 }
 
 #endif // CIRCT_DIALECT_GAA_GAAPASSES_TD

@@ -22,7 +22,7 @@ class Pass;
 namespace circt {
 namespace gaa {
 
-std::unique_ptr<mlir::Pass> createAnalysisPass();
+std::unique_ptr<mlir::Pass> createGenerateConflictMatrix();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

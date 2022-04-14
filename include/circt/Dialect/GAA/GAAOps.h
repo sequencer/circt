@@ -14,9 +14,6 @@
 
 #include "llvm/ADT/Any.h"
 
-#include "circt/Dialect/GAA/GAADialect.h"
-#include "circt/Dialect/GAA/GAAOpInterfaces.h"
-
 // provides implementations for FunctionInterface.td
 #include "mlir/IR/FunctionInterfaces.h"
 // LogicalResult
@@ -27,8 +24,23 @@
 #include "mlir/IR/SymbolTable.h"
 // provides implementations for ControlFlowInterfaces.td
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/IR/Dialect.h"
 
+#include "circt/Dialect/HW/HWDialect.h"
+#include "circt/Dialect/GAA/GAAOpInterfaces.h"
 #define GET_OP_CLASSES
 #include "circt/Dialect/GAA/GAA.h.inc"
+namespace circt {
+namespace gaa {
+GAAModuleLike getReferenceModule(InstanceOp instance);
+llvm::SmallVector<InstanceOp, 4> getInstances(GAAModuleLike module);
+llvm::SmallVector<GAAFunctionLike, 4> getFunctions(GAAModuleLike module);
+llvm::SmallVector<MethodOp, 4> getMethods(ModuleOp module);
+llvm::SmallVector<BindMethodOp, 4> getMethods(ExtModuleOp module);
+llvm::SmallVector<ValueOp, 4> getValues(ModuleOp module);
+llvm::SmallVector<BindValueOp, 4> getValues(ExtModuleOp module);
+llvm::SmallVector<RuleOp, 4> getRules(ModuleOp module);
+}
+}
 
 #endif // CIRCT_DIALECT_GAA_GAAOPS_H

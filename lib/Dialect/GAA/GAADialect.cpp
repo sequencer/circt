@@ -15,6 +15,7 @@
 
 using namespace circt;
 using namespace gaa;
+StringRef InstanceOp::instanceName() { return getName(); }
 
 void GAADialect::initialize() {
   addTypes<

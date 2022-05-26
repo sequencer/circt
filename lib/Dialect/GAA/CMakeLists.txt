@@ -10,7 +10,6 @@ add_circt_dialect_library(CIRCTGAA
   DEPENDS
   CIRCTHW
   MLIRGAAIncGen
-  CIRCTGAAEnumsIncGen
   CIRCTGAAAttrsIncGen
   CIRCTGAAOpInterfacesIncGen
 

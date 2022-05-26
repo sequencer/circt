@@ -4,11 +4,6 @@ add_circt_doc(GAAPasses -gen-pass-doc GAAPasses ./)
 
 set(LLVM_TARGET_DEFINITIONS GAA.td)
 
-mlir_tablegen(GAAEnums.h.inc -gen-enum-decls)
-mlir_tablegen(GAAEnums.cpp.inc -gen-enum-defs)
-add_public_tablegen_target(CIRCTGAAEnumsIncGen)
-add_dependencies(circt-headers CIRCTGAAEnumsIncGen)
-
 mlir_tablegen(GAAAttributes.h.inc -gen-attrdef-decls)
 mlir_tablegen(GAAAttributes.cpp.inc -gen-attrdef-defs)
 add_public_tablegen_target(CIRCTGAAAttrsIncGen)

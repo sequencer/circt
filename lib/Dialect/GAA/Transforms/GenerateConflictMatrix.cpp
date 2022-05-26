@@ -131,7 +131,7 @@ void GenerateConflictMatrix::runOnOperation() {
       auto module = node->getModule();
       // regard methods in the top being rule
       if(node == top) {
-        rules
+        rules;
       }
       auto moduleSymbolRef = mlir::SymbolRefAttr::get(module.getContext(), module.moduleName());
     }

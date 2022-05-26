@@ -2,7 +2,6 @@ add_circt_dialect_library(CIRCTGAATransforms
   GenerateConflictMatrix.cpp
 
   DEPENDS
-  CIRCTGAAEnumsIncGen
   CIRCTGAAAttrsIncGen
   CIRCTGAATransformsIncGen
   CIRCTGAAOpInterfacesIncGen

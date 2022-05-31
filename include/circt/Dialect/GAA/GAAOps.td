@@ -145,6 +145,18 @@ def RuleOp : GAAOp<
   let regions = (region SizedRegion<1>:$body);
 }
 
+// use DynInstDataOpInterface after migrate it into HW Dialect.
+def RuleRefOp : GAAOp<
+  "ruleref", [
+  HasParent<"CircuitOp">,
+  Symbol
+  ]> {
+  let summary = "Define a global reference to a rule";
+  let description = [{
+  }];
+  let arguments = (ins StrAttr:$rule, FlatSymbolRefAttr:$ref);
+}
+
 def RuleReturnOp : GAAOp<
   "rule.return", [
   Terminator,

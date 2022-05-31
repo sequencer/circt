@@ -23,6 +23,7 @@ namespace circt {
 namespace gaa {
 
 std::unique_ptr<mlir::Pass> createGenerateConflictMatrix();
+std::unique_ptr<mlir::Pass> createReferRules();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

@@ -15,7 +15,16 @@
 
 include "mlir/Pass/PassBase.td"
 
-def GenerateConflictMatrix : Pass<"gaa-analysis", "gaa::CircuitOp"> {
+def ReferRules : Pass<"gaa-refer-rules", "gaa::CircuitOp"> {
+  let summary = "generate all GAA::RuleRefOp for a circuit.";
+  let description = [{
+    This pass DFS all Rules via InstanceGraph, find all available rules
+    to construct gaa::RuleRefOp.
+  }];
+  let constructor = "circt::gaa::createReferRules()";
+}
+
+def GenerateConflictMatrix : Pass<"gaa-generate-conflict-matrix", "gaa::CircuitOp"> {
   let summary = "generate the conflict matrix for scheduling.";
   let description = [{
     This pass use CallGraph to generate the native call stack store conflict

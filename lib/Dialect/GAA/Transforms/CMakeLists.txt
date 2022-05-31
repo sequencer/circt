@@ -1,5 +1,6 @@
 add_circt_dialect_library(CIRCTGAATransforms
   GenerateConflictMatrix.cpp
+  ReferRules.cpp
 
   DEPENDS
   CIRCTGAAAttrsIncGen
